@@ -94,8 +94,13 @@ struct PlayerView: View {
 
                             // Live Voice Mode Status Pill
                             HStack(spacing: 4) {
-                                Image(systemName: player.activePlaybackMode.systemImage)
-                                    .font(.caption2)
+                                if player.activePlaybackMode == .kokoroPreparing {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                } else {
+                                    Image(systemName: player.activePlaybackMode.systemImage)
+                                        .font(.caption2)
+                                }
                                 Text(player.activePlaybackMode.displayLabel)
                                     .font(.caption2.weight(.semibold))
                                     .lineLimit(1)
@@ -143,6 +148,29 @@ struct PlayerView: View {
                     .regular,
                     in: RoundedRectangle(cornerRadius: 24, style: .continuous)
                 )
+
+                if let errorMessage = player.errorMessage, !errorMessage.isEmpty {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        Text(errorMessage)
+                            .font(.caption)
+                            .foregroundStyle(.primary)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button {
+                            player.errorMessage = nil
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.caption2.weight(.bold))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .glassEffect(.regular, in: Capsule())
+                }
             }
             .padding(.horizontal, 16)
             .padding(.top, 6)
@@ -151,7 +179,12 @@ struct PlayerView: View {
     }
 
     private var statusTintColor: Color {
-        .secondary
+        switch player.activePlaybackMode {
+        case .kokoroNeural, .kokoroPreparing:
+            return .purple
+        case .offlineVoice:
+            return .secondary
+        }
     }
 
     // MARK: - Edge-to-Edge Scrollable Sentence Text Preview

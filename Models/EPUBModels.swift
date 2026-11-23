@@ -201,30 +201,52 @@ enum LibrarySortOption: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// Indicates the active Apple speech synthesis engine mode.
+/// Indicates the active speech synthesis engine mode.
 enum TTSPlaybackMode: Equatable, Sendable {
     case offlineVoice
+    case kokoroNeural
+    case kokoroPreparing
 
     var displayLabel: String {
-        "On-Device Voice"
+        switch self {
+        case .offlineVoice:
+            return "On-Device Voice"
+        case .kokoroNeural:
+            return "Kokoro Neural AI"
+        case .kokoroPreparing:
+            return "Preparing Neural Voice…"
+        }
     }
 
     var systemImage: String {
-        "waveform"
+        switch self {
+        case .offlineVoice:
+            return "waveform"
+        case .kokoroNeural, .kokoroPreparing:
+            return "sparkles"
+        }
     }
 }
 
-/// Quality tier badge for Apple's `AVSpeechSynthesisVoice` voices.
+/// Identifies which local synthesis backend powers a `VoiceOption`.
+enum VoiceEngine: String, Codable, Hashable, Sendable {
+    case appleOnDevice
+    case kokoroNeural
+}
+
+/// Quality tier badge for narrator voices.
 enum VoiceQualityTier: String, Codable, Hashable, Sendable, Comparable {
     case standard = "Standard"
     case enhanced = "Enhanced"
     case premium = "Premium"
+    case neural = "Neural AI"
 
     private var sortRank: Int {
         switch self {
         case .standard: return 0
         case .enhanced: return 1
         case .premium: return 2
+        case .neural: return 3
         }
     }
 
@@ -233,13 +255,79 @@ enum VoiceQualityTier: String, Codable, Hashable, Sendable, Comparable {
     }
 }
 
-/// Descriptor for an Apple `AVSpeechSynthesisVoice` option (natively on iPhone/iPad or bridged from macOS in the Simulator).
+/// Descriptor for an Apple `AVSpeechSynthesisVoice` or on-device Kokoro-82M neural narrator voice.
 struct VoiceOption: Identifiable, Hashable, Codable, Sendable {
     let id: String
     let name: String
     let languageCode: String
     let qualityTier: VoiceQualityTier
     let subtitle: String
+    let engine: VoiceEngine
+
+    init(
+        id: String,
+        name: String,
+        languageCode: String,
+        qualityTier: VoiceQualityTier,
+        subtitle: String,
+        engine: VoiceEngine = .appleOnDevice
+    ) {
+        self.id = id
+        self.name = name
+        self.languageCode = languageCode
+        self.qualityTier = qualityTier
+        self.subtitle = subtitle
+        self.engine = engine
+    }
+
+    static let kokoroIDPrefix = "kokoro:"
+
+    var isKokoro: Bool {
+        engine == .kokoroNeural || id.hasPrefix(Self.kokoroIDPrefix)
+    }
+
+    /// Raw Kokoro voice identifier (e.g., `"af_heart"`), or `nil` for non-Kokoro voices.
+    var kokoroVoiceName: String? {
+        guard isKokoro else { return nil }
+        if id.hasPrefix(Self.kokoroIDPrefix) {
+            return String(id.dropFirst(Self.kokoroIDPrefix.count))
+        }
+        return id
+    }
+
+    /// Curated on-device Kokoro-82M English audiobook voices (US & UK).
+    static let kokoroEnglishVoices: [VoiceOption] = [
+        // American English — Female
+        VoiceOption(id: "kokoro:af_heart", name: "Heart", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Warm expressive narrator", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:af_bella", name: "Bella", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Clear engaging storyteller", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:af_nova", name: "Nova", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Modern balanced narrator", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:af_sarah", name: "Sarah", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Calm natural reading voice", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:af_nicole", name: "Nicole", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Soft intimate narrator", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:af_sky", name: "Sky", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Bright crisp narrator", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:af_aoede", name: "Aoede", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Articulate melodic voice", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:af_river", name: "River", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Relaxed steady cadence", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:af_alloy", name: "Alloy", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Clean neutral narrator", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:af_jessica", name: "Jessica", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Friendly conversational", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:af_kore", name: "Kore", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Poised studio-clear", engine: .kokoroNeural),
+        // American English — Male
+        VoiceOption(id: "kokoro:am_fenrir", name: "Fenrir", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Deep rich dramatic voice", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:am_michael", name: "Michael", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Warm classic audiobook", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:am_adam", name: "Adam", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Smooth confident narrator", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:am_liam", name: "Liam", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Friendly natural pacing", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:am_eric", name: "Eric", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Crisp grounded nonfiction", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:am_echo", name: "Echo", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Calm resonant baritone", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:am_onyx", name: "Onyx", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Deep steady studio voice", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:am_puck", name: "Puck", languageCode: "en-US", qualityTier: .neural, subtitle: "US English • Lively expressive character", engine: .kokoroNeural),
+        // British English — Female & Male
+        VoiceOption(id: "kokoro:bf_emma", name: "Emma", languageCode: "en-GB", qualityTier: .neural, subtitle: "UK English • Classic literary narrator", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:bf_isabella", name: "Isabella", languageCode: "en-GB", qualityTier: .neural, subtitle: "UK English • Warm refined narrator", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:bf_alice", name: "Alice", languageCode: "en-GB", qualityTier: .neural, subtitle: "UK English • Crisp articulate British", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:bf_lily", name: "Lily", languageCode: "en-GB", qualityTier: .neural, subtitle: "UK English • Gentle lyrical narrator", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:bm_george", name: "George", languageCode: "en-GB", qualityTier: .neural, subtitle: "UK English • Distinguished audiobook", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:bm_daniel", name: "Daniel", languageCode: "en-GB", qualityTier: .neural, subtitle: "UK English • Clear modern British", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:bm_lewis", name: "Lewis", languageCode: "en-GB", qualityTier: .neural, subtitle: "UK English • Warm thoughtful baritone", engine: .kokoroNeural),
+        VoiceOption(id: "kokoro:bm_fable", name: "Fable", languageCode: "en-GB", qualityTier: .neural, subtitle: "UK English • Expressive storyteller", engine: .kokoroNeural),
+    ]
 
     /// Legacy MacInTalk novelty/robotic synthesizer voice names and Eloquence screen-reader voices
     /// that sound robotic for audiobook narration.
@@ -450,9 +538,13 @@ struct VoiceOption: Identifiable, Hashable, Codable, Sendable {
         }
     }
 
-    /// Resolves a `VoiceOption` by identifier, falling back to the best available Apple English voice.
+    /// Resolves a `VoiceOption` by identifier (supporting both Kokoro-82M neural voices and Apple voices),
+    /// falling back to the best available Apple English voice.
     static func resolve(id: String?) -> VoiceOption {
         if let id {
+            if let kokoroMatch = kokoroEnglishVoices.first(where: { $0.id == id }) {
+                return kokoroMatch
+            }
             let onDevice = availableOnDeviceVoices()
             if let deviceMatch = onDevice.first(where: { $0.id == id }) {
                 return deviceMatch

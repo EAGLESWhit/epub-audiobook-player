@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// Apple Voice Picker prioritizing **Siri Natural**, **Premium**, and **Enhanced** voices
-/// (natively on iPhone/iPad via `AVSpeechSynthesizer` and bridged on Mac via `MacVoiceBridgeServer`),
-/// complete with step-by-step in-app instructions for downloading and selecting Enhanced/Premium voices.
+/// Voice Picker offering **Kokoro-82M Neural AI** on-device voices (powered by Apple Neural Engine)
+/// alongside Apple's **Premium** and **Enhanced** `AVSpeechSynthesisVoice` narrators.
 struct VoicePickerSheet: View {
     @Bindable var player: AudiobookPlayer
 
@@ -10,7 +9,35 @@ struct VoicePickerSheet: View {
     @State private var onDeviceVoices: [VoiceOption] = []
     @State private var englishOnlyFilter: Bool = true
     @State private var isRefreshingVoices: Bool = false
-    @State private var showingDownloadInstructions: Bool = true
+    @State private var showingDownloadInstructions: Bool = false
+    @State private var showAllKokoroVoices: Bool = false
+
+    private var kokoroManager: KokoroModelManager {
+        player.kokoroModelManager
+    }
+
+    private var displayedKokoroVoices: [VoiceOption] {
+        let all = VoiceOption.kokoroEnglishVoices
+        let defaultVoiceID = KeychainHelper.preferredOfflineVoiceID
+
+        var ordered = all
+        if let defaultIdx = ordered.firstIndex(where: { $0.id == defaultVoiceID }), defaultIdx > 0 {
+            let item = ordered.remove(at: defaultIdx)
+            ordered.insert(item, at: 0)
+        }
+
+        if showAllKokoroVoices {
+            return ordered
+        }
+
+        // Show curated top 8 narrators (plus whichever Kokoro voice is currently selected or default)
+        let featuredIDs: Set<String> = [
+            "kokoro:af_heart", "kokoro:af_bella", "kokoro:af_nova", "kokoro:af_nicole",
+            "kokoro:am_fenrir", "kokoro:am_michael", "kokoro:bf_emma", "kokoro:bm_george",
+            player.selectedVoice.id, defaultVoiceID
+        ]
+        return ordered.filter { featuredIDs.contains($0.id) }
+    }
 
     private var filteredOnDeviceVoices: [VoiceOption] {
         let base: [VoiceOption]
@@ -21,7 +48,7 @@ struct VoicePickerSheet: View {
             base = onDeviceVoices
         }
 
-        // Always pin the user's Default Narrator Voice at the very top of the list
+        // Pin the user's Default Narrator Voice at the top if it's an Apple voice
         let defaultVoiceID = KeychainHelper.preferredOfflineVoiceID
         if let defaultIdx = base.firstIndex(where: { $0.id == defaultVoiceID }), defaultIdx > 0 {
             var reordered = base
@@ -35,52 +62,8 @@ struct VoicePickerSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                // Section 1: In-App Instructions for Downloading & Setting Enhanced / Premium Voices
-                Section {
-                    DisclosureGroup(isExpanded: $showingDownloadInstructions) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            instructionStep(
-                                number: "1",
-                                title: "Open Device Settings",
-                                detail: "On your iPhone or iPad, open the **Settings** app and go to **Accessibility → Read & Speak → Voices** *(called **Spoken Content** on older iOS)*."
-                            )
-
-                            instructionStep(
-                                number: "2",
-                                title: "Download Enhanced or Premium Voices",
-                                detail: "Select **English** (or your language), tap a narrator like **Ava**, **Zoe**, **Evan**, **Allison**, **Nathan**, or **Samantha**, and tap the **cloud download icon** next to the **Premium** or **Enhanced** version."
-                            )
-
-                            instructionStep(
-                                number: "3",
-                                title: "Select the Voice in EPUB Player",
-                                detail: "Return to **EPUB Player**, open this **Select Voice** sheet, tap **Refresh Installed Voices** below, and tap your **Premium** or **Enhanced** voice to set it for your book."
-                            )
-                        }
-                        .padding(.vertical, 6)
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: "waveform.badge.magnifyingglass")
-                                .font(.headline)
-                                .foregroundStyle(Color.accentColor)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("How to Get Enhanced & Premium Voices")
-                                    .font(.subheadline.weight(.semibold))
-                                Text("Step-by-step guide to download & set Apple's neural voices")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-
-                // Section 2: On-Device & Mac-Bridged Apple Voices
-                Section {
-                    Toggle("English Voices Only", isOn: $englishOnlyFilter)
-                        .font(.subheadline)
-
-                    if player.isUsingBookVoiceOverride {
+                if player.isUsingBookVoiceOverride {
+                    Section {
                         Button {
                             player.resetBookVoiceToDefault()
                             dismiss()
@@ -92,6 +75,67 @@ struct VoicePickerSheet: View {
                             }
                         }
                     }
+                }
+
+                // Section 1: Kokoro-82M On-Device Neural AI Voices
+                Section {
+                    switch kokoroManager.state {
+                    case .notDownloaded:
+                        kokoroDownloadCard(errorMessage: nil)
+
+                    case .failed(let message):
+                        kokoroDownloadCard(errorMessage: message)
+
+                    case .downloading(let progress, let status):
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Label(status, systemImage: "arrow.down.circle.fill")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                Text("\(Int(progress * 100))%")
+                                    .font(.caption.monospacedDigit().weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            ProgressView(value: progress)
+                                .tint(.purple)
+                        }
+                        .padding(.vertical, 4)
+
+                    case .ready:
+                        ForEach(displayedKokoroVoices) { voice in
+                            voiceRow(for: voice)
+                        }
+
+                        if !showAllKokoroVoices && VoiceOption.kokoroEnglishVoices.count > displayedKokoroVoices.count {
+                            Button {
+                                withAnimation {
+                                    showAllKokoroVoices = true
+                                }
+                            } label: {
+                                Label(
+                                    "Show All \(VoiceOption.kokoroEnglishVoices.count) Kokoro Voices",
+                                    systemImage: "chevron.down.circle"
+                                )
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.purple)
+                            }
+                        }
+                    }
+                } header: {
+                    Label("Kokoro-82M Neural AI (On-Device)", systemImage: "sparkles")
+                } footer: {
+                    if kokoroManager.state.isReady {
+                        Text("Runs 100% offline on Apple Neural Engine (\(kokoroManager.installedDiskSizeText) on device). Additional voice styles cache locally (\(KokoroModelManager.estimatedPerVoiceSizeText) each) on first use.")
+                    } else {
+                        Text("Requires \(KokoroModelManager.estimatedDownloadSizeText) of on-device storage (plus \(KokoroModelManager.estimatedPerVoiceSizeText) per extra voice style). Unlocks 27 expressive US & UK neural voices with zero subscription or cloud fees.")
+                    }
+                }
+
+                // Section 2: On-Device Apple Voices
+                Section {
+                    Toggle("English Voices Only", isOn: $englishOnlyFilter)
+                        .font(.subheadline)
 
                     Button {
                         Task {
@@ -116,7 +160,47 @@ struct VoicePickerSheet: View {
                 } header: {
                     Label("Apple Voices — Premium & Enhanced", systemImage: "waveform")
                 } footer: {
-                    Text("Premium and Enhanced voices provide the highest-fidelity narration and are ranked automatically at the top of the list.")
+                    Text("Premium and Enhanced voices provide the highest-fidelity Apple narration and are ranked automatically at the top of the list.")
+                }
+
+                // Section 3: In-App Instructions for Downloading Apple Enhanced / Premium Voices
+                Section {
+                    DisclosureGroup(isExpanded: $showingDownloadInstructions) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            instructionStep(
+                                number: "1",
+                                title: "Open Device Settings",
+                                detail: "On your iPhone or iPad, open the **Settings** app and go to **Accessibility → Read & Speak → Voices** *(called **Spoken Content** on older iOS)*."
+                            )
+
+                            instructionStep(
+                                number: "2",
+                                title: "Download Enhanced or Premium Voices",
+                                detail: "Select **English** (or your language), tap a narrator like **Ava**, **Zoe**, **Evan**, **Allison**, **Nathan**, or **Samantha**, and tap the **cloud download icon** next to the **Premium** or **Enhanced** version."
+                            )
+
+                            instructionStep(
+                                number: "3",
+                                title: "Select the Voice in EPUB Player",
+                                detail: "Return to **EPUB Player**, open this **Select Voice** sheet, tap **Refresh Installed Voices** above, and tap your **Premium** or **Enhanced** voice to set it for your book."
+                            )
+                        }
+                        .padding(.vertical, 6)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "waveform.badge.magnifyingglass")
+                                .font(.headline)
+                                .foregroundStyle(Color.accentColor)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("How to Get Apple Enhanced & Premium Voices")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("Step-by-step guide to download additional Apple voices")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
                 }
             }
             .listStyle(.insetGrouped)
@@ -131,9 +215,53 @@ struct VoicePickerSheet: View {
                 }
             }
             .task {
+                kokoroManager.refreshInstalledStatus()
                 await reloadVoices()
             }
         }
+    }
+
+    @ViewBuilder
+    private func kokoroDownloadCard(errorMessage: String?) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "sparkles")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.purple)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Download Kokoro-82M Neural Voices")
+                        .font(.subheadline.weight(.semibold))
+                    Text("27 natural US & UK narrators • \(KokoroModelManager.estimatedDownloadSizeText) storage required")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            Button {
+                Task {
+                    _ = try? await kokoroManager.downloadAndPrepareIfNeeded()
+                }
+            } label: {
+                Label(
+                    errorMessage == nil
+                        ? "Download Neural Model (\(KokoroModelManager.estimatedDownloadSizeText))"
+                        : "Retry Download (\(KokoroModelManager.estimatedDownloadSizeText))",
+                    systemImage: "arrow.down.circle.fill"
+                )
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.purple)
+        }
+        .padding(.vertical, 4)
     }
 
     @ViewBuilder
@@ -203,7 +331,7 @@ struct VoicePickerSheet: View {
                         qualityBadge(for: voice.qualityTier)
                     }
 
-                    Text("\(voice.subtitle) • \(voice.languageCode)")
+                    Text(voice.isKokoro ? voice.subtitle : "\(voice.subtitle) • \(voice.languageCode)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -213,7 +341,7 @@ struct VoicePickerSheet: View {
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.title3)
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(voice.isKokoro ? .purple : Color.accentColor)
                 }
             }
             .contentShape(Rectangle())
@@ -224,6 +352,13 @@ struct VoicePickerSheet: View {
     @ViewBuilder
     private func qualityBadge(for tier: VoiceQualityTier) -> some View {
         switch tier {
+        case .neural:
+            Text("Neural AI")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.purple)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(Color.purple.opacity(0.15), in: Capsule())
         case .premium:
             Text("Premium")
                 .font(.system(size: 10, weight: .bold))

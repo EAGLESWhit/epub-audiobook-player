@@ -35,12 +35,13 @@ final class AudioCacheManager: Sendable {
             .replacingOccurrences(of: "/", with: "_")
     }
 
-    /// Exact target URL: `Application Support/AudioCache/{bookID}/{voiceID}/chapter_{index}/{sentenceHash}.mp3`
+    /// Exact target URL: `Application Support/AudioCache/{bookID}/{voiceID}/chapter_{index}/{sentenceHash}.{ext}`
     func targetFileURL(
         bookID: UUID,
         voiceID: String,
         chapterIndex: Int,
-        sentenceText: String
+        sentenceText: String,
+        fileExtension: String = "mp3"
     ) -> URL {
         let safeVoice = sanitizedDirectoryComponent(voiceID)
         let hash = sentenceHash(voiceID: voiceID, sentenceText: sentenceText)
@@ -48,21 +49,23 @@ final class AudioCacheManager: Sendable {
             .appendingPathComponent(bookID.uuidString, isDirectory: true)
             .appendingPathComponent(safeVoice, isDirectory: true)
             .appendingPathComponent("chapter_\(chapterIndex)", isDirectory: true)
-            .appendingPathComponent("\(hash).mp3", isDirectory: false)
+            .appendingPathComponent("\(hash).\(fileExtension)", isDirectory: false)
     }
 
-    /// Returns the cached `.mp3` file URL if it already exists on disk and is non-empty, or `nil` if uncached.
+    /// Returns the cached audio file URL if it already exists on disk and is non-empty, or `nil` if uncached.
     func cachedFileURL(
         bookID: UUID,
         voiceID: String,
         chapterIndex: Int,
-        sentenceText: String
+        sentenceText: String,
+        fileExtension: String = "mp3"
     ) -> URL? {
         let url = targetFileURL(
             bookID: bookID,
             voiceID: voiceID,
             chapterIndex: chapterIndex,
-            sentenceText: sentenceText
+            sentenceText: sentenceText,
+            fileExtension: fileExtension
         )
         guard FileManager.default.fileExists(atPath: url.path),
               let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
@@ -78,33 +81,37 @@ final class AudioCacheManager: Sendable {
         bookID: UUID,
         voiceID: String,
         chapterIndex: Int,
-        sentenceText: String
+        sentenceText: String,
+        fileExtension: String = "mp3"
     ) -> Bool {
         cachedFileURL(
             bookID: bookID,
             voiceID: voiceID,
             chapterIndex: chapterIndex,
-            sentenceText: sentenceText
+            sentenceText: sentenceText,
+            fileExtension: fileExtension
         ) != nil
     }
 
     // MARK: - Saving Audio Clips
 
-    /// Atomically writes fetched MP3 data to the deterministic cache path and excludes the cache folder from iCloud backup.
+    /// Atomically writes synthesized audio data to the deterministic cache path and excludes the cache folder from iCloud backup.
     @discardableResult
     func saveAudioData(
         _ data: Data,
         bookID: UUID,
         voiceID: String,
         chapterIndex: Int,
-        sentenceText: String
+        sentenceText: String,
+        fileExtension: String = "mp3"
     ) throws -> URL {
         ensureRootCacheDirectoryConfigured()
         let fileURL = targetFileURL(
             bookID: bookID,
             voiceID: voiceID,
             chapterIndex: chapterIndex,
-            sentenceText: sentenceText
+            sentenceText: sentenceText,
+            fileExtension: fileExtension
         )
         let chapterDir = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: chapterDir, withIntermediateDirectories: true)

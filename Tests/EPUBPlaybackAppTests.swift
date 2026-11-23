@@ -248,4 +248,55 @@ struct EPUBPlaybackAppTests {
         let rootValues = try cache.rootCacheDirectoryURL.resourceValues(forKeys: [.isExcludedFromBackupKey])
         #expect(rootValues.isExcludedFromBackup == true)
     }
+
+    // MARK: - Kokoro-82M Neural Voice Catalog, Resolution & Model Manager
+
+    @Test("Kokoro-82M English voices resolve cleanly, cache WAV clips, and report clean empty state on fresh directory")
+    func testKokoroVoiceResolutionAndModelManagerState() throws {
+        #expect(VoiceOption.kokoroEnglishVoices.count == 27)
+
+        let heart = VoiceOption.resolve(id: "kokoro:af_heart")
+        #expect(heart.isKokoro)
+        #expect(heart.name == "Heart")
+        #expect(heart.kokoroVoiceName == "af_heart")
+        #expect(heart.qualityTier == .neural)
+
+        let george = VoiceOption.resolve(id: "kokoro:bm_george")
+        #expect(george.isKokoro)
+        #expect(george.kokoroVoiceName == "bm_george")
+        #expect(george.languageCode == "en-GB")
+
+        // Verify deterministic WAV caching works for Kokoro voice IDs containing ':'
+        let cache = AudioCacheManager.shared
+        let bookID = UUID()
+        defer { cache.clearCache(for: bookID) }
+        let sampleWAV = Data("RIFF-MOCK-KOKORO-WAV".utf8)
+        let savedWAV = try cache.saveAudioData(
+            sampleWAV,
+            bookID: bookID,
+            voiceID: heart.id,
+            chapterIndex: 0,
+            sentenceText: "High above the tidal cliffs of Meridian.",
+            fileExtension: "wav"
+        )
+        #expect(savedWAV.pathExtension == "wav")
+        #expect(cache.isSentenceCached(
+            bookID: bookID,
+            voiceID: heart.id,
+            chapterIndex: 0,
+            sentenceText: "High above the tidal cliffs of Meridian.",
+            fileExtension: "wav"
+        ))
+
+        // Verify KokoroModelManager detects empty backup-excluded directory cleanly
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("KokoroTest-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let manager = KokoroModelManager(modelsDirectoryURL: tempDir)
+        #expect(!manager.isModelInstalledOnDisk)
+        #expect(manager.state == .notDownloaded)
+        let dirValues = try tempDir.resourceValues(forKeys: [.isExcludedFromBackupKey])
+        #expect(dirValues.isExcludedFromBackup == true)
+    }
 }

@@ -44,6 +44,8 @@ final class AudiobookPlayer {
 
     var modelContext: ModelContext?
     private let offlineProvider: OfflineTTSProvider
+    private let kokoroProvider: KokoroTTSProvider
+    let kokoroModelManager: KokoroModelManager
     private let syncManager: SyncManager
 
     private var activeProvider: any TTSProvider
@@ -56,10 +58,16 @@ final class AudiobookPlayer {
 
     init(
         offlineProvider: OfflineTTSProvider? = nil,
+        kokoroProvider: KokoroTTSProvider? = nil,
+        kokoroModelManager: KokoroModelManager? = nil,
         syncManager: SyncManager? = nil
     ) {
         let offline = offlineProvider ?? OfflineTTSProvider()
+        let modelManager = kokoroModelManager ?? .shared
+        let kokoro = kokoroProvider ?? KokoroTTSProvider(modelManager: modelManager)
         self.offlineProvider = offline
+        self.kokoroProvider = kokoro
+        self.kokoroModelManager = modelManager
         self.syncManager = syncManager ?? .shared
         self.activeProvider = offline
 
@@ -174,7 +182,7 @@ final class AudiobookPlayer {
                 self.isUsingBookVoiceOverride = false
                 book.selectedVoiceID = nil
             }
-            activePlaybackMode = .offlineVoice
+            updateActivePlaybackModeIndicator()
 
             book.totalChapters = max(1, parsed.chapters.count)
             book.totalSentencesInCurrentChapter = max(1, chapterSentences.count)
@@ -467,7 +475,9 @@ final class AudiobookPlayer {
         }
 
         offlineProvider.stop()
+        kokoroProvider.stop()
         activeSpokenRange = nil
+        errorMessage = nil
 
         let request = TTSSpeechRequest(
             sentence: sentenceText,
@@ -481,9 +491,15 @@ final class AudiobookPlayer {
         )
 
         isPlaying = true
-        activeProvider = offlineProvider
-        activePlaybackMode = .offlineVoice
-        offlineProvider.speak(request)
+        if selectedVoice.isKokoro {
+            activeProvider = kokoroProvider
+            activePlaybackMode = .kokoroNeural
+            kokoroProvider.speak(request)
+        } else {
+            activeProvider = offlineProvider
+            activePlaybackMode = .offlineVoice
+            offlineProvider.speak(request)
+        }
         updateNowPlayingInfo()
     }
 
@@ -494,6 +510,41 @@ final class AudiobookPlayer {
         offlineProvider.onSpokenRangeChanged = { [weak self] range in
             self?.activeSpokenRange = range
         }
+
+        kokoroProvider.onSentenceFinished = { [weak self] in
+            self?.handleSentenceFinished()
+        }
+        kokoroProvider.onSpokenRangeChanged = { [weak self] range in
+            self?.activeSpokenRange = range
+        }
+        kokoroProvider.onSynthesisStateChanged = { [weak self] isSynthesizing in
+            guard let self, self.selectedVoice.isKokoro else { return }
+            self.activePlaybackMode = isSynthesizing ? .kokoroPreparing : .kokoroNeural
+        }
+        kokoroProvider.onError = { [weak self] message in
+            guard let self else { return }
+            self.isPlaying = false
+            self.activePlaybackMode = self.selectedVoice.isKokoro ? .kokoroNeural : .offlineVoice
+            self.errorMessage = "Kokoro Neural Voice error: \(message)"
+            self.updateNowPlayingInfo()
+        }
+    }
+
+    /// Removes downloaded Kokoro-82M CoreML models from disk and falls back to an Apple voice if Kokoro was active.
+    func removeKokoroModels() async {
+        if selectedVoice.isKokoro {
+            stopPlaybackInternal()
+            let fallback = VoiceOption.defaultOfflineVoice()
+            selectedVoice = fallback
+            isUsingBookVoiceOverride = false
+            currentBook?.selectedVoiceID = nil
+            updateActivePlaybackModeIndicator()
+            saveProgress()
+        }
+        if KeychainHelper.preferredOfflineVoiceID.hasPrefix(VoiceOption.kokoroIDPrefix) {
+            KeychainHelper.preferredOfflineVoiceID = VoiceOption.defaultOfflineVoice().id
+        }
+        await kokoroModelManager.deleteDownloadedModels()
     }
 
     private func handleSentenceFinished() {
@@ -532,11 +583,16 @@ final class AudiobookPlayer {
     }
 
     private func updateActivePlaybackModeIndicator() {
-        activePlaybackMode = .offlineVoice
+        if selectedVoice.isKokoro {
+            activePlaybackMode = kokoroProvider.isSynthesizing ? .kokoroPreparing : .kokoroNeural
+        } else {
+            activePlaybackMode = .offlineVoice
+        }
     }
 
     private func stopPlaybackInternal() {
         offlineProvider.stop()
+        kokoroProvider.stop()
         activeSpokenRange = nil
         isPlaying = false
     }
@@ -745,6 +801,7 @@ final class AudiobookPlayer {
         // Restore full volume for the next time the user presses Play
         currentVolume = 1.0
         offlineProvider.setVolume(1.0)
+        kokoroProvider.setVolume(1.0)
 
         sleepTimerOption = .off
         sleepTimerRemainingSeconds = 0
@@ -760,6 +817,7 @@ final class AudiobookPlayer {
         sleepTimerRemainingSeconds = 0
         currentVolume = 1.0
         offlineProvider.setVolume(1.0)
+        kokoroProvider.setVolume(1.0)
     }
 
     // MARK: - Background Audio Session, Lock Screen Controls & Interruptions
