@@ -1,0 +1,477 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000010000000000000001 /* EPUBPlaybackApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000001 /* EPUBPlaybackApp.swift */; };
+		A10000020000000000000001 /* Book.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000020000000000000001 /* Book.swift */; };
+		A10000030000000000000001 /* Bookmark.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000030000000000000001 /* Bookmark.swift */; };
+		A10000040000000000000001 /* EPUBModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000040000000000000001 /* EPUBModels.swift */; };
+		A10000050000000000000001 /* EPUBParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000050000000000000001 /* EPUBParser.swift */; };
+		A10000060000000000000001 /* SampleEPUBGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000060000000000000001 /* SampleEPUBGenerator.swift */; };
+		A10000070000000000000001 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000070000000000000001 /* KeychainHelper.swift */; };
+		A10000080000000000000001 /* AudioCacheManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000080000000000000001 /* AudioCacheManager.swift */; };
+		A10000100000000000000001 /* TTSProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000100000000000000001 /* TTSProvider.swift */; };
+		A10000110000000000000001 /* OfflineTTSProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000110000000000000001 /* OfflineTTSProvider.swift */; };
+		A10000140000000000000001 /* SyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000140000000000000001 /* SyncManager.swift */; };
+		A10000150000000000000001 /* LibraryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000150000000000000001 /* LibraryViewModel.swift */; };
+		A10000160000000000000001 /* AudiobookPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000160000000000000001 /* AudiobookPlayer.swift */; };
+		A10000170000000000000001 /* BookCoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000170000000000000001 /* BookCoverView.swift */; };
+		A10000180000000000000001 /* MiniPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000180000000000000001 /* MiniPlayerView.swift */; };
+		A10000190000000000000001 /* PlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000190000000000000001 /* PlayerView.swift */; };
+		A10000200000000000000001 /* ChaptersAndBookmarksSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000200000000000000001 /* ChaptersAndBookmarksSheet.swift */; };
+		A10000210000000000000001 /* VoicePickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000210000000000000001 /* VoicePickerSheet.swift */; };
+		A10000220000000000000001 /* SettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000220000000000000001 /* SettingsSheet.swift */; };
+		A10000230000000000000001 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000230000000000000001 /* LibraryView.swift */; };
+		A10000240000000000000001 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = A80000010000000000000001 /* ZIPFoundation */; };
+		A10000250000000000000001 /* EPUBPlaybackAppTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000240000000000000001 /* EPUBPlaybackAppTests.swift */; };
+		A10000260000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000270000000000000001 /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A90000010000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000010000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A50000010000000000000001;
+			remoteInfo = EPUBPlaybackApp;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		A20000010000000000000001 /* EPUBPlaybackApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPUBPlaybackApp.swift; sourceTree = "<group>"; };
+		A20000020000000000000001 /* Book.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Book.swift; sourceTree = "<group>"; };
+		A20000030000000000000001 /* Bookmark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bookmark.swift; sourceTree = "<group>"; };
+		A20000040000000000000001 /* EPUBModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPUBModels.swift; sourceTree = "<group>"; };
+		A20000050000000000000001 /* EPUBParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPUBParser.swift; sourceTree = "<group>"; };
+		A20000060000000000000001 /* SampleEPUBGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleEPUBGenerator.swift; sourceTree = "<group>"; };
+		A20000070000000000000001 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
+		A20000080000000000000001 /* AudioCacheManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCacheManager.swift; sourceTree = "<group>"; };
+		A20000100000000000000001 /* TTSProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSProvider.swift; sourceTree = "<group>"; };
+		A20000110000000000000001 /* OfflineTTSProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineTTSProvider.swift; sourceTree = "<group>"; };
+		A20000140000000000000001 /* SyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncManager.swift; sourceTree = "<group>"; };
+		A20000150000000000000001 /* LibraryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryViewModel.swift; sourceTree = "<group>"; };
+		A20000160000000000000001 /* AudiobookPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudiobookPlayer.swift; sourceTree = "<group>"; };
+		A20000170000000000000001 /* BookCoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookCoverView.swift; sourceTree = "<group>"; };
+		A20000180000000000000001 /* MiniPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniPlayerView.swift; sourceTree = "<group>"; };
+		A20000190000000000000001 /* PlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerView.swift; sourceTree = "<group>"; };
+		A20000200000000000000001 /* ChaptersAndBookmarksSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChaptersAndBookmarksSheet.swift; sourceTree = "<group>"; };
+		A20000210000000000000001 /* VoicePickerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePickerSheet.swift; sourceTree = "<group>"; };
+		A20000220000000000000001 /* SettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSheet.swift; sourceTree = "<group>"; };
+		A20000230000000000000001 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
+		A20000240000000000000001 /* EPUBPlaybackAppTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPUBPlaybackAppTests.swift; sourceTree = "<group>"; };
+		A20000250000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A20000260000000000000001 /* EPUBPlaybackApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EPUBPlaybackApp.entitlements; sourceTree = "<group>"; };
+		A20000270000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A30000010000000000000001 /* EPUBPlaybackApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EPUBPlaybackApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A30000020000000000000001 /* EPUBPlaybackAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EPUBPlaybackAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A40000010000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000240000000000000001 /* ZIPFoundation in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A40000020000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A60000010000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000001 /* EPUBPlaybackApp.swift */,
+				A20000270000000000000001 /* Assets.xcassets */,
+				A20000250000000000000001 /* Info.plist */,
+				A20000260000000000000001 /* EPUBPlaybackApp.entitlements */,
+				A60000020000000000000001 /* Models */,
+				A60000030000000000000001 /* Services */,
+				A60000040000000000000001 /* ViewModels */,
+				A60000050000000000000001 /* Views */,
+				A60000060000000000000001 /* Tests */,
+				A60000070000000000000001 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A60000020000000000000001 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				A20000020000000000000001 /* Book.swift */,
+				A20000030000000000000001 /* Bookmark.swift */,
+				A20000040000000000000001 /* EPUBModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		A60000030000000000000001 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				A20000050000000000000001 /* EPUBParser.swift */,
+				A20000060000000000000001 /* SampleEPUBGenerator.swift */,
+				A20000070000000000000001 /* KeychainHelper.swift */,
+				A20000080000000000000001 /* AudioCacheManager.swift */,
+				A20000100000000000000001 /* TTSProvider.swift */,
+				A20000110000000000000001 /* OfflineTTSProvider.swift */,
+				A20000140000000000000001 /* SyncManager.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		A60000040000000000000001 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				A20000150000000000000001 /* LibraryViewModel.swift */,
+				A20000160000000000000001 /* AudiobookPlayer.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		A60000050000000000000001 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A20000170000000000000001 /* BookCoverView.swift */,
+				A20000180000000000000001 /* MiniPlayerView.swift */,
+				A20000190000000000000001 /* PlayerView.swift */,
+				A20000200000000000000001 /* ChaptersAndBookmarksSheet.swift */,
+				A20000210000000000000001 /* VoicePickerSheet.swift */,
+				A20000220000000000000001 /* SettingsSheet.swift */,
+				A20000230000000000000001 /* LibraryView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		A60000060000000000000001 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				A20000240000000000000001 /* EPUBPlaybackAppTests.swift */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		A60000070000000000000001 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A30000010000000000000001 /* EPUBPlaybackApp.app */,
+				A30000020000000000000001 /* EPUBPlaybackAppTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A50000010000000000000001 /* EPUBPlaybackApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A70000020000000000000001 /* Build configuration list for PBXNativeTarget "EPUBPlaybackApp" */;
+			buildPhases = (
+				A50000020000000000000001 /* Sources */,
+				A40000010000000000000001 /* Frameworks */,
+				A50000050000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = EPUBPlaybackApp;
+			packageProductDependencies = (
+				A80000010000000000000001 /* ZIPFoundation */,
+			);
+			productName = EPUBPlaybackApp;
+			productReference = A30000010000000000000001 /* EPUBPlaybackApp.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A50000030000000000000001 /* EPUBPlaybackAppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A70000030000000000000001 /* Build configuration list for PBXNativeTarget "EPUBPlaybackAppTests" */;
+			buildPhases = (
+				A50000040000000000000001 /* Sources */,
+				A40000020000000000000001 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A90000020000000000000001 /* PBXTargetDependency */,
+			);
+			name = EPUBPlaybackAppTests;
+			productName = EPUBPlaybackAppTests;
+			productReference = A30000020000000000000001 /* EPUBPlaybackAppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A00000010000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2700;
+				LastUpgradeCheck = 2700;
+			};
+			buildConfigurationList = A70000010000000000000001 /* Build configuration list for PBXProject "EPUBPlaybackApp" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A60000010000000000000001;
+			packageReferences = (
+				A80000020000000000000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+			);
+			productRefGroup = A60000070000000000000001 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A50000010000000000000001 /* EPUBPlaybackApp */,
+				A50000030000000000000001 /* EPUBPlaybackAppTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A50000050000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000260000000000000001 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A50000020000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000010000000000000001 /* EPUBPlaybackApp.swift in Sources */,
+				A10000020000000000000001 /* Book.swift in Sources */,
+				A10000030000000000000001 /* Bookmark.swift in Sources */,
+				A10000040000000000000001 /* EPUBModels.swift in Sources */,
+				A10000050000000000000001 /* EPUBParser.swift in Sources */,
+				A10000060000000000000001 /* SampleEPUBGenerator.swift in Sources */,
+				A10000070000000000000001 /* KeychainHelper.swift in Sources */,
+				A10000080000000000000001 /* AudioCacheManager.swift in Sources */,
+				A10000100000000000000001 /* TTSProvider.swift in Sources */,
+				A10000110000000000000001 /* OfflineTTSProvider.swift in Sources */,
+				A10000140000000000000001 /* SyncManager.swift in Sources */,
+				A10000150000000000000001 /* LibraryViewModel.swift in Sources */,
+				A10000160000000000000001 /* AudiobookPlayer.swift in Sources */,
+				A10000170000000000000001 /* BookCoverView.swift in Sources */,
+				A10000180000000000000001 /* MiniPlayerView.swift in Sources */,
+				A10000190000000000000001 /* PlayerView.swift in Sources */,
+				A10000200000000000000001 /* ChaptersAndBookmarksSheet.swift in Sources */,
+				A10000210000000000000001 /* VoicePickerSheet.swift in Sources */,
+				A10000220000000000000001 /* SettingsSheet.swift in Sources */,
+				A10000230000000000000001 /* LibraryView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A50000040000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000250000000000000001 /* EPUBPlaybackAppTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A90000020000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A50000010000000000000001 /* EPUBPlaybackApp */;
+			targetProxy = A90000010000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		A70000040000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		A70000050000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 6.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		A70000060000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = FMN5P9TV25;
+				INFOPLIST_FILE = Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 3.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.matthewwhitaker.epubplayback.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		A70000070000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = FMN5P9TV25;
+				INFOPLIST_FILE = Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 3.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.matthewwhitaker.epubplayback.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		A70000080000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 3.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.epubplayback.appTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EPUBPlaybackApp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/EPUBPlaybackApp";
+			};
+			name = Debug;
+		};
+		A70000090000000000000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 3.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.epubplayback.appTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EPUBPlaybackApp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/EPUBPlaybackApp";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A70000010000000000000001 /* Build configuration list for PBXProject "EPUBPlaybackApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A70000040000000000000001 /* Debug */,
+				A70000050000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A70000020000000000000001 /* Build configuration list for PBXNativeTarget "EPUBPlaybackApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A70000060000000000000001 /* Debug */,
+				A70000070000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A70000030000000000000001 /* Build configuration list for PBXNativeTarget "EPUBPlaybackAppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A70000080000000000000001 /* Debug */,
+				A70000090000000000000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A80000020000000000000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.19;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A80000010000000000000001 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A80000020000000000000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = A00000010000000000000001 /* Project object */;
+}
