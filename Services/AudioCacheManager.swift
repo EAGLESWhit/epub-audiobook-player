@@ -29,10 +29,16 @@ final class AudioCacheManager: Sendable {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Sanitizes `voiceID` for safe filesystem directory names while preserving uniqueness.
+    /// Sanitizes `voiceID` for safe filesystem directory names while blocking path traversal characters.
     private func sanitizedDirectoryComponent(_ raw: String) -> String {
-        raw.replacingOccurrences(of: ":", with: "_")
-            .replacingOccurrences(of: "/", with: "_")
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._-"))
+        let cleanedScalars = raw.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
+        var result = String(cleanedScalars)
+        while result.contains("..") {
+            result = result.replacingOccurrences(of: "..", with: "_")
+        }
+        result = result.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return result.isEmpty ? "default_voice" : result
     }
 
     /// Exact target URL: `Application Support/AudioCache/{bookID}/{voiceID}/chapter_{index}/{sentenceHash}.{ext}`

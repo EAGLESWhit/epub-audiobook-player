@@ -1,9 +1,15 @@
 import Foundation
+import ImageIO
 import NaturalLanguage
+import UIKit
 import ZIPFoundation
 
-enum EPUBParserError: LocalizedError {
+enum EPUBParserError: LocalizedError, Equatable {
     case invalidArchive(String)
+    case invalidFileFormat
+    case fileTooLarge(limitMB: Int)
+    case unsafeArchive(String)
+    case drmProtected
     case containerXMLMissing
     case opfPathNotFound
     case opfFileMissing(String)
@@ -13,6 +19,14 @@ enum EPUBParserError: LocalizedError {
         switch self {
         case .invalidArchive(let detail):
             return "Unable to unzip EPUB archive: \(detail)"
+        case .invalidFileFormat:
+            return "This file is not a valid EPUB archive."
+        case .fileTooLarge(let limitMB):
+            return "This EPUB exceeds the maximum supported file size (\(limitMB) MB)."
+        case .unsafeArchive(let detail):
+            return "Blocked unsafe EPUB archive: \(detail)"
+        case .drmProtected:
+            return "This EPUB is DRM-protected and cannot be imported. Please use a DRM-free EPUB file."
         case .containerXMLMissing:
             return "Invalid EPUB: META-INF/container.xml was not found."
         case .opfPathNotFound:
@@ -25,16 +39,38 @@ enum EPUBParserError: LocalizedError {
     }
 }
 
-/// Service that unzips `.epub` archives via `ZIPFoundation` and parses `META-INF/container.xml`,
-/// the `.opf` manifest/spine, and chapter XHTML files using Foundation's `XMLParser`.
+/// Service that securely validates and unzips `.epub` archives via `ZIPFoundation`, enforces ZIP bomb,
+/// symlink, path-traversal, XXE/entity-expansion, DRM, and image-decompression guards, and parses
+/// `META-INF/container.xml`, the `.opf` manifest/spine, and chapter XHTML files using `XMLParser`.
 final class EPUBParser: Sendable {
+    struct SecurityLimits: Sendable {
+        var maxCompressedArchiveBytes: UInt64 = 150 * 1024 * 1024       // 150 MB
+        var maxTotalUncompressedBytes: UInt64 = 500 * 1024 * 1024       // 500 MB
+        var maxSingleEntryBytes: UInt64 = 50 * 1024 * 1024              // 50 MB
+        var maxEntryCount: Int = 5_000                                  // 5,000 entries
+        var maxCompressionRatio: Double = 100.0                         // Flag >100x ratio above threshold
+        var compressionRatioThresholdBytes: UInt64 = 10 * 1024 * 1024   // 10 MB
+        var maxXMLFileBytes: Int = 20 * 1024 * 1024                     // 20 MB per XML/XHTML file
+        var maxChapterTextCharacters: Int = 5_000_000                   // 5M chars per chapter
+        var maxCoverImageBytes: Int = 15 * 1024 * 1024                  // 15 MB raw cover image
+        var maxCoverSourcePixelDimension: Int = 16_384                  // Reject decompression-bomb covers
+        var maxCoverOutputPixelDimension: CGFloat = 1_200               // Downscale covers to <= 1200 px
+
+        static let `default` = SecurityLimits()
+    }
+
     static let shared = EPUBParser()
 
-    init() {}
+    let limits: SecurityLimits
+
+    init(limits: SecurityLimits = .default) {
+        self.limits = limits
+    }
 
     // MARK: - Public API
 
-    /// Unzips an `.epub` file from a source URL into `Documents/ExtractedEPUBs/{bookID}` and parses its metadata and chapters.
+    /// Validates file size & ZIP header, unzips an `.epub` file from a source URL into
+    /// `Documents/ExtractedEPUBs/{bookID}`, and parses its metadata and chapters.
     func importAndParseEPUB(from sourceURL: URL, bookID: UUID) throws -> (parsed: ParsedEPUB, rawEPUBData: Data) {
         let didStartAccessing = sourceURL.startAccessingSecurityScopedResource()
         defer {
@@ -43,13 +79,31 @@ final class EPUBParser: Sendable {
             }
         }
 
+        // Check compressed file size BEFORE reading into memory
+        if let resourceValues = try? sourceURL.resourceValues(forKeys: [.fileSizeKey]),
+           let fileSize = resourceValues.fileSize,
+           UInt64(max(0, fileSize)) > limits.maxCompressedArchiveBytes {
+            throw EPUBParserError.fileTooLarge(limitMB: Int(limits.maxCompressedArchiveBytes / (1024 * 1024)))
+        }
+
         let epubData = try Data(contentsOf: sourceURL)
         let parsed = try extractAndParseEPUB(from: epubData, bookID: bookID)
         return (parsed, epubData)
     }
 
-    /// Unzips raw `.epub` data (e.g. synced via CloudKit `@Attribute(.externalStorage)`) into local storage and parses it.
+    /// Securely validates and unzips raw `.epub` data (e.g. local import or CloudKit `@Attribute(.externalStorage)`)
+    /// into local backup-excluded storage and parses it.
     func extractAndParseEPUB(from epubData: Data, bookID: UUID) throws -> ParsedEPUB {
+        guard !epubData.isEmpty else {
+            throw EPUBParserError.invalidFileFormat
+        }
+        guard UInt64(epubData.count) <= limits.maxCompressedArchiveBytes else {
+            throw EPUBParserError.fileTooLarge(limitMB: Int(limits.maxCompressedArchiveBytes / (1024 * 1024)))
+        }
+        guard Self.hasValidZIPMagicBytes(epubData) else {
+            throw EPUBParserError.invalidFileFormat
+        }
+
         let extractionDir = Self.extractionDirectory(for: bookID)
         let fileManager = FileManager.default
 
@@ -57,21 +111,22 @@ final class EPUBParser: Sendable {
             try? fileManager.removeItem(at: extractionDir)
         }
         try fileManager.createDirectory(at: extractionDir, withIntermediateDirectories: true)
+        Self.excludeExtractedRootFromBackup()
 
         let tempEPUBURL = fileManager.temporaryDirectory.appendingPathComponent("\(bookID.uuidString).epub")
         defer {
             try? fileManager.removeItem(at: tempEPUBURL)
         }
 
-        try epubData.write(to: tempEPUBURL, options: .atomic)
-
         do {
-            try fileManager.unzipItem(at: tempEPUBURL, to: extractionDir)
+            try epubData.write(to: tempEPUBURL, options: .atomic)
+            try securelyExtractZIP(from: tempEPUBURL, to: extractionDir)
+            return try parseExtractedEPUB(at: extractionDir)
         } catch {
-            throw EPUBParserError.invalidArchive(error.localizedDescription)
+            // Ensure no partial/malicious files remain on disk if validation or parsing fails
+            try? fileManager.removeItem(at: extractionDir)
+            throw error
         }
-
-        return try parseExtractedEPUB(at: extractionDir)
     }
 
     /// Parses an already-extracted EPUB directory on disk, or extracts from `book.epubFileData` if needed.
@@ -101,49 +156,234 @@ final class EPUBParser: Sendable {
 
     /// Returns the deterministic local extraction path in the app's Documents directory.
     static func extractionDirectory(for bookID: UUID) -> URL {
+        extractedRootDirectory()
+            .appendingPathComponent(bookID.uuidString, isDirectory: true)
+    }
+
+    static func extractedRootDirectory() -> URL {
         let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? URL.temporaryDirectory
-        return documentsURL
-            .appendingPathComponent("ExtractedEPUBs", isDirectory: true)
-            .appendingPathComponent(bookID.uuidString, isDirectory: true)
+        return documentsURL.appendingPathComponent("ExtractedEPUBs", isDirectory: true)
+    }
+
+    private static func excludeExtractedRootFromBackup() {
+        var root = extractedRootDirectory()
+        if !FileManager.default.fileExists(atPath: root.path) {
+            try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        }
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? root.setResourceValues(values)
+    }
+
+    // MARK: - Secure ZIP Validation & Streaming Extraction
+
+    /// Checks standard ZIP local file header (`PK\x03\x04`), empty archive (`PK\x05\x06`), or spanned (`PK\x07\x08`) magic bytes.
+    static func hasValidZIPMagicBytes(_ data: Data) -> Bool {
+        guard data.count >= 4 else { return false }
+        let bytes = [UInt8](data.prefix(4))
+        guard bytes[0] == 0x50, bytes[1] == 0x4B else { return false }
+        return (bytes[2] == 0x03 && bytes[3] == 0x04)
+            || (bytes[2] == 0x05 && bytes[3] == 0x06)
+            || (bytes[2] == 0x07 && bytes[3] == 0x08)
+    }
+
+    private func securelyExtractZIP(from archiveURL: URL, to destinationDir: URL) throws {
+        let archive: Archive
+        do {
+            archive = try Archive(url: archiveURL, accessMode: .read)
+        } catch {
+            throw EPUBParserError.invalidArchive(error.localizedDescription)
+        }
+
+        let fileManager = FileManager.default
+        let canonicalRoot = destinationDir.resolvingSymlinksInPath().standardizedFileURL
+        let rootPrefix = canonicalRoot.path.hasSuffix("/") ? canonicalRoot.path : canonicalRoot.path + "/"
+
+        var entryCount = 0
+        var totalWrittenBytes: UInt64 = 0
+
+        for entry in archive {
+            entryCount += 1
+            if entryCount > limits.maxEntryCount {
+                throw EPUBParserError.unsafeArchive("Archive contains too many files (limit: \(limits.maxEntryCount)).")
+            }
+
+            // 1. Block symbolic links inside EPUB archives
+            if entry.type == .symlink {
+                throw EPUBParserError.unsafeArchive("Archive contains symbolic links, which are not permitted.")
+            }
+
+            // 2. Reject absolute paths, null bytes, backslashes, or `..` traversal components
+            let rawPath = entry.path
+            guard !rawPath.isEmpty,
+                  !rawPath.hasPrefix("/"),
+                  !rawPath.contains("\0"),
+                  !rawPath.contains("\\") else {
+                throw EPUBParserError.unsafeArchive("Archive contains an invalid file path.")
+            }
+
+            let pathComponents = rawPath.split(separator: "/")
+            if pathComponents.contains("..") {
+                throw EPUBParserError.unsafeArchive("Archive attempts path traversal outside its container.")
+            }
+
+            // 3. Check declared sizes & suspicious ZIP bomb compression ratios before extracting
+            let declaredUncompressed = entry.uncompressedSize
+            let declaredCompressed = max(UInt64(1), entry.compressedSize)
+            if declaredUncompressed > limits.maxSingleEntryBytes {
+                throw EPUBParserError.unsafeArchive("Archive contains an oversized entry.")
+            }
+            if declaredUncompressed > limits.compressionRatioThresholdBytes {
+                let ratio = Double(declaredUncompressed) / Double(declaredCompressed)
+                if ratio > limits.maxCompressionRatio {
+                    throw EPUBParserError.unsafeArchive("Archive has an abnormal compression ratio (possible ZIP bomb).")
+                }
+            }
+
+            // 4. Verify resolved destination stays strictly inside `canonicalRoot`
+            let destinationURL = canonicalRoot.appendingPathComponent(rawPath).standardizedFileURL
+            guard destinationURL.path.hasPrefix(rootPrefix) || destinationURL.path == canonicalRoot.path else {
+                throw EPUBParserError.unsafeArchive("Archive entry escapes the extraction directory.")
+            }
+
+            if entry.type == .directory {
+                try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+                continue
+            }
+
+            // 5. Stream-extract while enforcing real written byte counts (catches spoofed ZIP headers)
+            let parentDir = destinationURL.deletingLastPathComponent()
+            try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
+
+            guard fileManager.createFile(atPath: destinationURL.path, contents: nil) else {
+                throw EPUBParserError.invalidArchive("Could not create extracted file \(rawPath).")
+            }
+
+            let handle = try FileHandle(forWritingTo: destinationURL)
+            defer {
+                try? handle.close()
+            }
+
+            var entryWrittenBytes: UInt64 = 0
+            do {
+                _ = try archive.extract(entry) { chunk in
+                    let chunkCount = UInt64(chunk.count)
+                    entryWrittenBytes += chunkCount
+                    totalWrittenBytes += chunkCount
+
+                    if entryWrittenBytes > limits.maxSingleEntryBytes {
+                        throw EPUBParserError.unsafeArchive("Extracted entry exceeded the maximum allowed file size.")
+                    }
+                    if totalWrittenBytes > limits.maxTotalUncompressedBytes {
+                        throw EPUBParserError.unsafeArchive("Extracted archive exceeded the maximum allowed total size.")
+                    }
+                    try handle.write(contentsOf: chunk)
+                }
+            } catch let parserError as EPUBParserError {
+                throw parserError
+            } catch {
+                throw EPUBParserError.invalidArchive(error.localizedDescription)
+            }
+        }
+    }
+
+    // MARK: - Path Confinement & Safe File Reads
+
+    /// Ensures a resolved URL stays strictly inside `rootDir` (blocks `../` traversal and symlinks).
+    private static func validatedSubpath(_ url: URL, inside rootDir: URL) -> URL? {
+        let canonicalRoot = rootDir.resolvingSymlinksInPath().standardizedFileURL
+        let canonicalTarget = url.resolvingSymlinksInPath().standardizedFileURL
+        let rootPrefix = canonicalRoot.path.hasSuffix("/") ? canonicalRoot.path : canonicalRoot.path + "/"
+        guard canonicalTarget.path.hasPrefix(rootPrefix) else {
+            return nil
+        }
+        return canonicalTarget
+    }
+
+    /// Reads a file only if it resides inside `rootDir` and does not exceed `maxBytes`.
+    private func safeReadData(from url: URL, inside rootDir: URL, maxBytes: Int) -> Data? {
+        guard let safeURL = Self.validatedSubpath(url, inside: rootDir),
+              FileManager.default.fileExists(atPath: safeURL.path) else {
+            return nil
+        }
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: safeURL.path),
+           let fileSize = attrs[.size] as? NSNumber,
+           fileSize.intValue > maxBytes {
+            return nil
+        }
+        return try? Data(contentsOf: safeURL)
+    }
+
+    /// Strips internal DTD `<!ENTITY ...>` blocks to guard against XML Billion Laughs entity-expansion attacks.
+    private static func sanitizeXMLData(_ data: Data) -> Data {
+        guard let raw = String(data: data, encoding: .utf8),
+              raw.range(of: "<!ENTITY", options: .caseInsensitive) != nil else {
+            return data
+        }
+        let stripped = raw.replacingOccurrences(
+            of: "<!DOCTYPE[\\s\\S]*?\\]>",
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        return Data(stripped.utf8)
     }
 
     // MARK: - Core XML Parsing Pipeline
 
     func parseExtractedEPUB(at extractionDir: URL) throws -> ParsedEPUB {
+        // 0. Detect DRM-protected EPUBs via META-INF/encryption.xml (while allowing standard font obfuscation)
+        let encryptionURL = extractionDir
+            .appendingPathComponent("META-INF", isDirectory: true)
+            .appendingPathComponent("encryption.xml")
+        if let encryptionData = safeReadData(from: encryptionURL, inside: extractionDir, maxBytes: limits.maxXMLFileBytes) {
+            let encryptionDelegate = EncryptionXMLParserDelegate()
+            let encryptionParser = XMLParser(data: Self.sanitizeXMLData(encryptionData))
+            encryptionParser.delegate = encryptionDelegate
+            encryptionParser.shouldProcessNamespaces = false
+            encryptionParser.shouldResolveExternalEntities = false
+            encryptionParser.parse()
+            if encryptionDelegate.hasDRMProtectedContent {
+                throw EPUBParserError.drmProtected
+            }
+        }
+
         // 1. Parse META-INF/container.xml
         let containerURL = extractionDir
             .appendingPathComponent("META-INF", isDirectory: true)
             .appendingPathComponent("container.xml")
 
-        guard FileManager.default.fileExists(atPath: containerURL.path),
-              let containerData = try? Data(contentsOf: containerURL) else {
+        guard let containerData = safeReadData(from: containerURL, inside: extractionDir, maxBytes: limits.maxXMLFileBytes) else {
             throw EPUBParserError.containerXMLMissing
         }
 
         let containerDelegate = ContainerXMLParserDelegate()
-        let containerParser = XMLParser(data: containerData)
+        let containerParser = XMLParser(data: Self.sanitizeXMLData(containerData))
         containerParser.delegate = containerDelegate
         containerParser.shouldProcessNamespaces = false
+        containerParser.shouldResolveExternalEntities = false
         containerParser.parse()
 
         guard let opfRelativePath = containerDelegate.rootfileFullPath, !opfRelativePath.isEmpty else {
             throw EPUBParserError.opfPathNotFound
         }
 
-        // 2. Locate and parse the .opf package file
+        // 2. Locate and parse the .opf package file (strictly confined inside extractionDir)
         let cleanOPFPath = opfRelativePath.removingPercentEncoding ?? opfRelativePath
-        let opfURL = extractionDir.appendingPathComponent(cleanOPFPath)
-        guard FileManager.default.fileExists(atPath: opfURL.path),
-              let opfData = try? Data(contentsOf: opfURL) else {
+        let rawOPFURL = extractionDir.appendingPathComponent(cleanOPFPath)
+        guard let opfURL = Self.validatedSubpath(rawOPFURL, inside: extractionDir) else {
+            throw EPUBParserError.unsafeArchive("OPF package path escapes the EPUB container.")
+        }
+        guard let opfData = safeReadData(from: opfURL, inside: extractionDir, maxBytes: limits.maxXMLFileBytes) else {
             throw EPUBParserError.opfFileMissing(cleanOPFPath)
         }
 
         let opfBaseDir = opfURL.deletingLastPathComponent()
         let opfDelegate = OPFXMLParserDelegate()
-        let opfParser = XMLParser(data: opfData)
+        let opfParser = XMLParser(data: Self.sanitizeXMLData(opfData))
         opfParser.delegate = opfDelegate
         opfParser.shouldProcessNamespaces = false
+        opfParser.shouldResolveExternalEntities = false
         opfParser.parse()
 
         // 3. Optional NCX table-of-contents parsing for friendly chapter titles
@@ -152,17 +392,23 @@ final class EPUBParser: Sendable {
             $0.mediaType.contains("dtbncx") || $0.href.lowercased().hasSuffix(".ncx")
         }) {
             let ncxURL = Self.resolveRelativeURL(baseDir: opfBaseDir, relativeHref: ncxItem.href)
-            if let ncxData = try? Data(contentsOf: ncxURL) {
+            if let ncxData = safeReadData(from: ncxURL, inside: extractionDir, maxBytes: limits.maxXMLFileBytes) {
                 let ncxDelegate = NCXXMLParserDelegate()
-                let ncxParser = XMLParser(data: ncxData)
+                let ncxParser = XMLParser(data: Self.sanitizeXMLData(ncxData))
                 ncxParser.delegate = ncxDelegate
+                ncxParser.shouldProcessNamespaces = false
+                ncxParser.shouldResolveExternalEntities = false
                 ncxParser.parse()
                 tocTitlesByHref = ncxDelegate.titlesByNormalizedHref
             }
         }
 
-        // 4. Extract cover artwork Data if available
-        let coverArtworkData = extractCoverArtwork(opfDelegate: opfDelegate, opfBaseDir: opfBaseDir)
+        // 4. Extract & sanitize cover artwork Data if available
+        let coverArtworkData = extractCoverArtwork(
+            opfDelegate: opfDelegate,
+            opfBaseDir: opfBaseDir,
+            extractionDir: extractionDir
+        )
 
         // 5. Iterate spine itemrefs in reading order and extract clean text from each XHTML file
         var chapters: [EPUBChapter] = []
@@ -181,7 +427,9 @@ final class EPUBParser: Sendable {
             }
 
             let chapterURL = Self.resolveRelativeURL(baseDir: opfBaseDir, relativeHref: item.href)
-            guard let chapterData = try? Data(contentsOf: chapterURL) else { continue }
+            guard let chapterData = safeReadData(from: chapterURL, inside: extractionDir, maxBytes: limits.maxXMLFileBytes) else {
+                continue
+            }
 
             let (extractedTitle, cleanText) = extractCleanTextAndTitle(from: chapterData)
             let paragraphs = Self.splitIntoParagraphs(cleanText)
@@ -233,26 +481,26 @@ final class EPUBParser: Sendable {
         )
     }
 
-    // MARK: - Cover Extraction
+    // MARK: - Safe Cover Extraction & Downscaling
 
-    private func extractCoverArtwork(opfDelegate: OPFXMLParserDelegate, opfBaseDir: URL) -> Data? {
-        // 1. Check manifest item with properties="cover-image"
+    private func extractCoverArtwork(
+        opfDelegate: OPFXMLParserDelegate,
+        opfBaseDir: URL,
+        extractionDir: URL
+    ) -> Data? {
+        var candidateHrefs: [String] = []
+
+        // 1. Manifest item with properties="cover-image"
         if let coverPropItem = opfDelegate.manifestItems.values.first(where: {
             $0.properties?.contains("cover-image") == true
         }) {
-            let url = Self.resolveRelativeURL(baseDir: opfBaseDir, relativeHref: coverPropItem.href)
-            if let data = try? Data(contentsOf: url), !data.isEmpty {
-                return data
-            }
+            candidateHrefs.append(coverPropItem.href)
         }
 
-        // 2. Check <meta name="cover" content="item-id" />
+        // 2. <meta name="cover" content="item-id" />
         if let metaCoverID = opfDelegate.coverMetaItemID,
            let coverItem = opfDelegate.manifestItems[metaCoverID] {
-            let url = Self.resolveRelativeURL(baseDir: opfBaseDir, relativeHref: coverItem.href)
-            if let data = try? Data(contentsOf: url), !data.isEmpty {
-                return data
-            }
+            candidateHrefs.append(coverItem.href)
         }
 
         // 3. Fallback: Any image manifest item whose id or href contains "cover"
@@ -260,13 +508,48 @@ final class EPUBParser: Sendable {
             $0.mediaType.lowercased().hasPrefix("image/") &&
             ($0.id.lowercased().contains("cover") || $0.href.lowercased().contains("cover"))
         }) {
-            let url = Self.resolveRelativeURL(baseDir: opfBaseDir, relativeHref: fallbackCover.href)
-            if let data = try? Data(contentsOf: url), !data.isEmpty {
-                return data
+            candidateHrefs.append(fallbackCover.href)
+        }
+
+        for href in candidateHrefs {
+            let url = Self.resolveRelativeURL(baseDir: opfBaseDir, relativeHref: href)
+            if let rawData = safeReadData(from: url, inside: extractionDir, maxBytes: limits.maxCoverImageBytes),
+               !rawData.isEmpty,
+               let sanitized = sanitizeCoverImageData(rawData) {
+                return sanitized
             }
         }
 
         return nil
+    }
+
+    /// Safely validates image pixel dimensions via ImageIO (blocking image decompression bombs)
+    /// and downscales oversized cover art to a clean JPEG suitable for RAM and iCloud sync.
+    func sanitizeCoverImageData(_ rawData: Data) -> Data? {
+        guard !rawData.isEmpty, rawData.count <= limits.maxCoverImageBytes else { return nil }
+        guard let imageSource = CGImageSourceCreateWithData(rawData as CFData, nil) else { return nil }
+
+        // Inspect header pixel dimensions BEFORE decoding into memory
+        if let props = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any] {
+            let width = props[kCGImagePropertyPixelWidth] as? Int ?? 0
+            let height = props[kCGImagePropertyPixelHeight] as? Int ?? 0
+            guard width > 0, height > 0,
+                  width <= limits.maxCoverSourcePixelDimension,
+                  height <= limits.maxCoverSourcePixelDimension else {
+                return nil
+            }
+        }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: limits.maxCoverOutputPixelDimension
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, options as CFDictionary) else {
+            return nil
+        }
+        return UIImage(cgImage: thumbnail).jpegData(compressionQuality: 0.85)
     }
 
     // MARK: - XHTML Clean Text & Sentence Splitting
@@ -274,8 +557,9 @@ final class EPUBParser: Sendable {
     /// Uses Foundation's `XMLParser` first to extract structured paragraph/heading text from XHTML,
     /// with a resilient HTML tag-stripping fallback if an EPUB contains non-strict HTML markup.
     func extractCleanTextAndTitle(from data: Data) -> (title: String?, text: String) {
-        let xhtmlDelegate = XHTMLTextXMLParserDelegate()
-        let xmlParser = XMLParser(data: data)
+        let sanitizedData = Self.sanitizeXMLData(data)
+        let xhtmlDelegate = XHTMLTextXMLParserDelegate(maxCharacters: limits.maxChapterTextCharacters)
+        let xmlParser = XMLParser(data: sanitizedData)
         xmlParser.delegate = xhtmlDelegate
         xmlParser.shouldProcessNamespaces = false
         xmlParser.shouldResolveExternalEntities = false
@@ -288,11 +572,14 @@ final class EPUBParser: Sendable {
         }
 
         // Fallback if XHTML had loose HTML entities or unclosed tags that halted strict XMLParser early
-        let rawHTML = String(data: data, encoding: .utf8)
-            ?? String(data: data, encoding: .isoLatin1)
+        let rawHTML = String(data: sanitizedData, encoding: .utf8)
+            ?? String(data: sanitizedData, encoding: .isoLatin1)
             ?? ""
-        let fallbackTitle = Self.extractTitleViaRegex(from: rawHTML) ?? xhtmlDelegate.extractedTitle
-        let fallbackText = Self.stripHTMLTagsAndNormalize(rawHTML)
+        let cappedHTML = rawHTML.count > limits.maxChapterTextCharacters * 2
+            ? String(rawHTML.prefix(limits.maxChapterTextCharacters * 2))
+            : rawHTML
+        let fallbackTitle = Self.extractTitleViaRegex(from: cappedHTML) ?? xhtmlDelegate.extractedTitle
+        let fallbackText = Self.stripHTMLTagsAndNormalize(cappedHTML)
 
         if fallbackText.count > xmlExtractedText.count {
             return (fallbackTitle, fallbackText)
@@ -629,16 +916,85 @@ private final class NCXXMLParserDelegate: NSObject, XMLParserDelegate {
     }
 }
 
+/// Parses `META-INF/encryption.xml` to detect DRM-protected content while allowing standard EPUB font obfuscation.
+private final class EncryptionXMLParserDelegate: NSObject, XMLParserDelegate {
+    private(set) var hasDRMProtectedContent = false
+
+    private var insideEncryptedData = false
+    private var currentAlgorithm: String?
+    private var currentCipherURI: String?
+
+    private static let allowedFontObfuscationAlgorithms: Set<String> = [
+        "http://www.idpf.org/2008/embedding",
+        "http://ns.adobe.com/pdf/enc#rc"
+    ]
+
+    private static let fontExtensions: Set<String> = ["ttf", "otf", "woff", "woff2"]
+
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributeDict: [String: String] = [:]
+    ) {
+        let localName = elementName.components(separatedBy: ":").last?.lowercased() ?? elementName.lowercased()
+        switch localName {
+        case "encrypteddata":
+            insideEncryptedData = true
+            currentAlgorithm = nil
+            currentCipherURI = nil
+        case "encryptionmethod":
+            if insideEncryptedData {
+                currentAlgorithm = attributeDict["Algorithm"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            }
+        case "cipherreference":
+            if insideEncryptedData {
+                currentCipherURI = attributeDict["URI"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            }
+        default:
+            break
+        }
+    }
+
+    func parser(
+        _ parser: XMLParser,
+        didEndElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?
+    ) {
+        let localName = elementName.components(separatedBy: ":").last?.lowercased() ?? elementName.lowercased()
+        guard localName == "encrypteddata" else { return }
+        defer { insideEncryptedData = false }
+
+        let isAllowedFontAlgo = currentAlgorithm.map { Self.allowedFontObfuscationAlgorithms.contains($0) } ?? false
+        let uriExt = currentCipherURI.map { URL(fileURLWithPath: $0).pathExtension.lowercased() } ?? ""
+        let isFontResource = Self.fontExtensions.contains(uriExt)
+
+        // Flag as DRM unless it is explicitly standard EPUB font obfuscation on a font file
+        if !(isAllowedFontAlgo && (isFontResource || uriExt.isEmpty)) {
+            hasDRMProtectedContent = true
+            parser.abortParsing()
+        }
+    }
+}
+
 /// Parses an XHTML chapter document using Foundation's `XMLParser`, extracting clean readable text and heading title.
 private final class XHTMLTextXMLParserDelegate: NSObject, XMLParserDelegate {
     var accumulatedText: String = ""
     var extractedTitle: String?
 
+    private let maxCharacters: Int
     private var ignoredElementDepth = 0
     private var insideHeading = false
     private var insideTitleTag = false
     private var headingBuffer = ""
     private var titleTagBuffer = ""
+
+    init(maxCharacters: Int = 5_000_000) {
+        self.maxCharacters = maxCharacters
+        super.init()
+    }
 
     private static let ignoredTags: Set<String> = ["head", "style", "script", "svg", "noscript"]
     private static let blockTags: Set<String> = [
@@ -693,7 +1049,11 @@ private final class XHTMLTextXMLParserDelegate: NSObject, XMLParserDelegate {
         if insideHeading {
             headingBuffer.append(flattened)
         }
-        accumulatedText.append(flattened)
+        if accumulatedText.count < maxCharacters {
+            accumulatedText.append(flattened)
+        } else {
+            parser.abortParsing()
+        }
     }
 
     func parser(
