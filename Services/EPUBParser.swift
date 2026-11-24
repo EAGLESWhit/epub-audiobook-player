@@ -129,15 +129,23 @@ final class EPUBParser: Sendable {
         }
     }
 
-    /// Parses an already-extracted EPUB directory on disk, or extracts from `book.epubFileData` if needed.
-    func parseExistingOrExtract(bookID: UUID, epubData: Data?) throws -> ParsedEPUB {
+    /// Parses an already-extracted EPUB directory on disk (using the fast JSON chapter cache when present),
+    /// or extracts from `book.epubFileData` if needed.
+    func parseExistingOrExtract(
+        bookID: UUID,
+        epubData: Data?,
+        skipCoverExtraction: Bool = false
+    ) throws -> ParsedEPUB {
         let extractionDir = Self.extractionDirectory(for: bookID)
         let containerURL = extractionDir
             .appendingPathComponent("META-INF", isDirectory: true)
             .appendingPathComponent("container.xml")
 
         if FileManager.default.fileExists(atPath: containerURL.path) {
-            return try parseExtractedEPUB(at: extractionDir)
+            if let cached = loadCachedParsedEPUB(at: extractionDir, includeCover: !skipCoverExtraction) {
+                return cached
+            }
+            return try parseExtractedEPUB(at: extractionDir, skipCoverExtraction: skipCoverExtraction)
         }
 
         guard let epubData, !epubData.isEmpty else {
@@ -329,31 +337,96 @@ final class EPUBParser: Sendable {
         return Data(stripped.utf8)
     }
 
-    // MARK: - Core XML Parsing Pipeline
+    private struct CachedParsedPayload: Codable {
+        let version: Int
+        let title: String
+        let author: String
+        let chapters: [EPUBChapter]
+    }
 
-    func parseExtractedEPUB(at extractionDir: URL) throws -> ParsedEPUB {
-        // 0. Detect DRM-protected EPUBs via META-INF/encryption.xml (while allowing standard font obfuscation)
+    private static let parsedCacheFilename = "parsed_chapters_v1.json"
+    private static let maxMetadataStringLength = 250
+
+    private func loadCachedParsedEPUB(at extractionDir: URL, includeCover: Bool) -> ParsedEPUB? {
+        let cacheURL = extractionDir.appendingPathComponent(Self.parsedCacheFilename)
+        guard let data = safeReadData(from: cacheURL, inside: extractionDir, maxBytes: 40 * 1024 * 1024),
+              let payload = try? JSONDecoder().decode(CachedParsedPayload.self, from: data),
+              payload.version == 1,
+              !payload.chapters.isEmpty else {
+            return nil
+        }
+        let coverData: Data?
+        if includeCover {
+            let coverCacheURL = extractionDir.appendingPathComponent("parsed_cover_v1.jpg")
+            coverData = safeReadData(from: coverCacheURL, inside: extractionDir, maxBytes: limits.maxCoverImageBytes)
+        } else {
+            coverData = nil
+        }
+        return ParsedEPUB(
+            title: payload.title,
+            author: payload.author,
+            coverArtworkData: coverData,
+            chapters: payload.chapters,
+            extractionDirectory: extractionDir
+        )
+    }
+
+    private func saveCachedParsedEPUB(_ parsed: ParsedEPUB) {
+        let payload = CachedParsedPayload(
+            version: 1,
+            title: parsed.title,
+            author: parsed.author,
+            chapters: parsed.chapters
+        )
+        let cacheURL = parsed.extractionDirectory.appendingPathComponent(Self.parsedCacheFilename)
+        if let encoded = try? JSONEncoder().encode(payload) {
+            try? encoded.write(to: cacheURL, options: .atomic)
+        }
+        if let cover = parsed.coverArtworkData {
+            let coverURL = parsed.extractionDirectory.appendingPathComponent("parsed_cover_v1.jpg")
+            try? cover.write(to: coverURL, options: .atomic)
+        }
+    }
+
+    private static func clampedMetadata(_ raw: String, fallback: String) -> String {
+        let trimmed = raw
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return fallback }
+        if trimmed.count <= maxMetadataStringLength {
+            return trimmed
+        }
+        return String(trimmed.prefix(max(1, maxMetadataStringLength - 1))) + "…"
+    }
+
+    private func hasDRMProtectedEncryptionFile(at extractionDir: URL) -> Bool {
         let encryptionURL = extractionDir
             .appendingPathComponent("META-INF", isDirectory: true)
             .appendingPathComponent("encryption.xml")
-        if let encryptionData = safeReadData(from: encryptionURL, inside: extractionDir, maxBytes: limits.maxXMLFileBytes) {
-            let encryptionDelegate = EncryptionXMLParserDelegate()
-            let encryptionParser = XMLParser(data: Self.sanitizeXMLData(encryptionData))
-            encryptionParser.delegate = encryptionDelegate
-            encryptionParser.shouldProcessNamespaces = false
-            encryptionParser.shouldResolveExternalEntities = false
-            encryptionParser.parse()
-            if encryptionDelegate.hasDRMProtectedContent {
-                throw EPUBParserError.drmProtected
-            }
+        guard let encryptionData = safeReadData(from: encryptionURL, inside: extractionDir, maxBytes: limits.maxXMLFileBytes) else {
+            return false
         }
+        let encryptionDelegate = EncryptionXMLParserDelegate()
+        let encryptionParser = XMLParser(data: Self.sanitizeXMLData(encryptionData))
+        encryptionParser.delegate = encryptionDelegate
+        encryptionParser.shouldProcessNamespaces = false
+        encryptionParser.shouldResolveExternalEntities = false
+        encryptionParser.parse()
+        return encryptionDelegate.hasDRMProtectedContent
+    }
 
+    // MARK: - Core XML Parsing Pipeline
+
+    func parseExtractedEPUB(at extractionDir: URL, skipCoverExtraction: Bool = false) throws -> ParsedEPUB {
         // 1. Parse META-INF/container.xml
         let containerURL = extractionDir
             .appendingPathComponent("META-INF", isDirectory: true)
             .appendingPathComponent("container.xml")
 
         guard let containerData = safeReadData(from: containerURL, inside: extractionDir, maxBytes: limits.maxXMLFileBytes) else {
+            if hasDRMProtectedEncryptionFile(at: extractionDir) {
+                throw EPUBParserError.drmProtected
+            }
             throw EPUBParserError.containerXMLMissing
         }
 
@@ -365,6 +438,9 @@ final class EPUBParser: Sendable {
         containerParser.parse()
 
         guard let opfRelativePath = containerDelegate.rootfileFullPath, !opfRelativePath.isEmpty else {
+            if hasDRMProtectedEncryptionFile(at: extractionDir) {
+                throw EPUBParserError.drmProtected
+            }
             throw EPUBParserError.opfPathNotFound
         }
 
@@ -375,6 +451,9 @@ final class EPUBParser: Sendable {
             throw EPUBParserError.unsafeArchive("OPF package path escapes the EPUB container.")
         }
         guard let opfData = safeReadData(from: opfURL, inside: extractionDir, maxBytes: limits.maxXMLFileBytes) else {
+            if hasDRMProtectedEncryptionFile(at: extractionDir) {
+                throw EPUBParserError.drmProtected
+            }
             throw EPUBParserError.opfFileMissing(cleanOPFPath)
         }
 
@@ -403,12 +482,14 @@ final class EPUBParser: Sendable {
             }
         }
 
-        // 4. Extract & sanitize cover artwork Data if available
-        let coverArtworkData = extractCoverArtwork(
-            opfDelegate: opfDelegate,
-            opfBaseDir: opfBaseDir,
-            extractionDir: extractionDir
-        )
+        // 4. Extract & sanitize cover artwork Data if needed
+        let coverArtworkData = skipCoverExtraction
+            ? nil
+            : extractCoverArtwork(
+                opfDelegate: opfDelegate,
+                opfBaseDir: opfBaseDir,
+                extractionDir: extractionDir
+            )
 
         // 5. Iterate spine itemrefs in reading order and extract clean text from each XHTML file
         var chapters: [EPUBChapter] = []
@@ -440,14 +521,15 @@ final class EPUBParser: Sendable {
 
             let normalizedHref = Self.normalizeHref(item.href)
             let tocTitle = tocTitlesByHref[normalizedHref]
-            let finalTitle: String
+            let rawTitle: String
             if let tocTitle, !tocTitle.isEmpty {
-                finalTitle = tocTitle
+                rawTitle = tocTitle
             } else if let extractedTitle, !extractedTitle.isEmpty {
-                finalTitle = extractedTitle
+                rawTitle = extractedTitle
             } else {
-                finalTitle = "Chapter \(chapterCounter + 1)"
+                rawTitle = "Chapter \(chapterCounter + 1)"
             }
+            let finalTitle = Self.clampedMetadata(rawTitle, fallback: "Chapter \(chapterCounter + 1)")
 
             let chapter = EPUBChapter(
                 index: chapterCounter,
@@ -462,23 +544,25 @@ final class EPUBParser: Sendable {
         }
 
         guard !chapters.isEmpty else {
+            // Only flag DRM if no readable chapters could be extracted AND encryption.xml indicates DRM
+            if hasDRMProtectedEncryptionFile(at: extractionDir) {
+                throw EPUBParserError.drmProtected
+            }
             throw EPUBParserError.noReadableChaptersFound
         }
 
-        let bookTitle = opfDelegate.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "Untitled Book"
-            : opfDelegate.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let bookAuthor = opfDelegate.author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "Unknown Author"
-            : opfDelegate.author.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bookTitle = Self.clampedMetadata(opfDelegate.title, fallback: "Untitled Book")
+        let bookAuthor = Self.clampedMetadata(opfDelegate.author, fallback: "Unknown Author")
 
-        return ParsedEPUB(
+        let parsed = ParsedEPUB(
             title: bookTitle,
             author: bookAuthor,
             coverArtworkData: coverArtworkData,
             chapters: chapters,
             extractionDirectory: extractionDir
         )
+        saveCachedParsedEPUB(parsed)
+        return parsed
     }
 
     // MARK: - Safe Cover Extraction & Downscaling

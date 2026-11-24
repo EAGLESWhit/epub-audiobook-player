@@ -1,9 +1,17 @@
 import AVFoundation
 import Foundation
 
-/// On-device neural TTS provider backed by Kokoro-82M (`KokoroModelManager`), deterministic WAV caching
-/// (`AudioCacheManager`), shared single-segment background look-ahead synthesis, and `AVAudioPlayer`
-/// playback with live speed control, sleep-timer fade-out, and automatic session recovery.
+/// Outcome of a relative ±15-second seek inside `KokoroTTSProvider`.
+enum AudioSeekResult: Equatable {
+    case seeked
+    case reachedStartOfSegment
+    case reachedEndOfSegment
+    case unavailable
+}
+
+/// On-device neural TTS provider backed by Kokoro-82M (`KokoroModelManager`), compressed AAC `.m4a` caching
+/// with automatic LRU eviction (`AudioCacheManager`), shared single-segment background look-ahead synthesis,
+/// ±15-second seeking, and `AVAudioPlayer` playback with live speed control and sleep-timer fade-out.
 @MainActor
 final class KokoroTTSProvider: NSObject, TTSProvider {
     private let modelManager: KokoroModelManager
@@ -36,9 +44,8 @@ final class KokoroTTSProvider: NSObject, TTSProvider {
     }
 
     var onSentenceFinished: (@MainActor () -> Void)?
-    var onSpokenRangeChanged: (@MainActor (NSRange) -> Void)?
     var onSynthesisStateChanged: (@MainActor (Bool) -> Void)?
-    /// Fired when actual audio playback begins for the current segment, passing its exact WAV duration in seconds.
+    /// Fired when actual audio playback begins for the current segment, passing its exact audio duration in seconds.
     var onAudioPlaybackStarted: (@MainActor (TimeInterval) -> Void)?
     var onError: (@MainActor (String) -> Void)?
 
@@ -52,7 +59,12 @@ final class KokoroTTSProvider: NSObject, TTSProvider {
     }
 
     func speak(_ request: TTSSpeechRequest) {
-        let targetKey = cacheKey(for: request.bookID, voiceID: request.voice.id, chapterIndex: request.chapterIndex, text: request.sentence)
+        let targetKey = cacheKey(
+            for: request.bookID,
+            voiceID: request.voice.id,
+            chapterIndex: request.chapterIndex,
+            text: request.sentence
+        )
         let keepMatchingPrefetch = (inFlightPrefetchKey == targetKey && inFlightPrefetchTask != nil)
 
         stopInternal(cancelPrefetch: !keepMatchingPrefetch)
@@ -78,15 +90,14 @@ final class KokoroTTSProvider: NSObject, TTSProvider {
 
         let voiceName = request.voice.kokoroVoiceName ?? "af_heart"
 
-        // 1. Fast path: already synthesized and cached on disk
-        if let cachedURL = cacheManager.cachedFileURL(
+        // 1. Fast path: already synthesized and cached on disk (.m4a or legacy .wav)
+        if let cachedURL = cacheManager.cachedNeuralAudioURL(
             bookID: request.bookID,
             voiceID: request.voice.id,
             chapterIndex: request.chapterIndex,
-            sentenceText: request.sentence,
-            fileExtension: "wav"
+            sentenceText: request.sentence
         ) {
-            if playWAVFile(at: cachedURL, token: token) {
+            if playAudioFile(at: cachedURL, token: token) {
                 schedulePrefetch(for: request, voiceName: voiceName, token: token)
                 return
             } else {
@@ -120,20 +131,19 @@ final class KokoroTTSProvider: NSObject, TTSProvider {
                     )
                     guard !Task.isCancelled, self.requestToken == token else { return }
 
-                    fileURL = try self.cacheManager.saveAudioData(
-                        wavData,
+                    fileURL = try await self.cacheManager.saveCompressedNeuralAudioAsync(
+                        wavData: wavData,
                         bookID: request.bookID,
                         voiceID: request.voice.id,
                         chapterIndex: request.chapterIndex,
-                        sentenceText: request.sentence,
-                        fileExtension: "wav"
+                        sentenceText: request.sentence
                     )
                 }
 
                 guard !Task.isCancelled, self.requestToken == token else { return }
                 self.setSynthesizing(false)
 
-                if self.playWAVFile(at: fileURL, token: token) {
+                if self.playAudioFile(at: fileURL, token: token) {
                     self.schedulePrefetch(for: request, voiceName: voiceName, token: token)
                 } else {
                     self.isSpeaking = false
@@ -158,7 +168,6 @@ final class KokoroTTSProvider: NSObject, TTSProvider {
             isSpeaking = false
             isPaused = true
         } else if isSynthesizing {
-            // Cancel in-flight synthesis if paused before audio starts so Play restarts cleanly
             stopInternal(cancelPrefetch: true)
         }
     }
@@ -173,7 +182,6 @@ final class KokoroTTSProvider: NSObject, TTSProvider {
             isSpeaking = true
             isPaused = false
         } else {
-            // Retry once after explicitly re-configuring the playback session
             reconfigureAndActivateAudioSession()
             if player.play() {
                 isSpeaking = true
@@ -206,17 +214,36 @@ final class KokoroTTSProvider: NSObject, TTSProvider {
         }
     }
 
+    /// Seeks relative to the current playback position by `deltaSeconds` (e.g. `+15` or `-15`).
+    func seek(by deltaSeconds: TimeInterval) -> AudioSeekResult {
+        guard let player = audioPlayer, player.duration > 0 else {
+            return .unavailable
+        }
+        let target = player.currentTime + deltaSeconds
+        if target < 0 {
+            if player.currentTime > 2.5 {
+                player.currentTime = 0
+                return .seeked
+            }
+            return .reachedStartOfSegment
+        }
+        if target >= player.duration - 0.15 {
+            return .reachedEndOfSegment
+        }
+        player.currentTime = target
+        return .seeked
+    }
+
     // MARK: - Playback & Single-Segment Shared Prefetch
 
     @discardableResult
-    private func playWAVFile(at fileURL: URL, token: Int) -> Bool {
+    private func playAudioFile(at fileURL: URL, token: Int) -> Bool {
         guard requestToken == token else { return false }
         ensureAudioSessionActive()
 
         do {
             let player = try AVAudioPlayer(contentsOf: fileURL)
             guard player.duration > 0.05 else {
-                // Empty/degenerate WAV (e.g., symbol-only text) — advance cleanly
                 isSpeaking = false
                 isPaused = false
                 onSentenceFinished?()
@@ -236,7 +263,6 @@ final class KokoroTTSProvider: NSObject, TTSProvider {
                 return true
             }
 
-            // Retry once after explicitly re-configuring the session (e.g. right after a system interruption)
             reconfigureAndActivateAudioSession()
             if player.play() {
                 isSpeaking = true
@@ -262,14 +288,14 @@ final class KokoroTTSProvider: NSObject, TTSProvider {
             return
         }
 
-        let alreadyCached = cacheManager.isSentenceCached(
+        if cacheManager.isNeuralSentenceCached(
             bookID: request.bookID,
             voiceID: request.voice.id,
             chapterIndex: request.chapterIndex,
-            sentenceText: nextSegment.text,
-            fileExtension: "wav"
-        )
-        if alreadyCached { return }
+            sentenceText: nextSegment.text
+        ) {
+            return
+        }
 
         let key = cacheKey(
             for: request.bookID,
@@ -292,7 +318,6 @@ final class KokoroTTSProvider: NSObject, TTSProvider {
         let text = nextSegment.text
 
         inFlightPrefetchTask = Task<URL, Error> { @MainActor [weak self] in
-            // Brief yield so the newly started AVAudioPlayer establishes steady playback first
             try await Task.sleep(for: .milliseconds(150))
             try Task.checkCancellation()
 
@@ -303,13 +328,12 @@ final class KokoroTTSProvider: NSObject, TTSProvider {
             )
             try Task.checkCancellation()
 
-            let savedURL = try cache.saveAudioData(
-                wavData,
+            let savedURL = try await cache.saveCompressedNeuralAudioAsync(
+                wavData: wavData,
                 bookID: bookID,
                 voiceID: voiceID,
                 chapterIndex: chapterIndex,
-                sentenceText: text,
-                fileExtension: "wav"
+                sentenceText: text
             )
 
             if self?.inFlightPrefetchKey == key {

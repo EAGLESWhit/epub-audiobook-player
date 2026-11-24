@@ -24,7 +24,6 @@ final class OfflineTTSProvider: NSObject, TTSProvider {
     var activePlaybackMode: TTSPlaybackMode { .offlineVoice }
 
     var onSentenceFinished: (@MainActor () -> Void)?
-    var onSpokenRangeChanged: (@MainActor (NSRange) -> Void)?
 
     private var currentVolume: Float = 1.0
     private var currentRate: Double = 1.0
@@ -306,20 +305,6 @@ final class OfflineTTSProvider: NSObject, TTSProvider {
 }
 
 extension OfflineTTSProvider: AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
-    nonisolated func speechSynthesizer(
-        _ synthesizer: AVSpeechSynthesizer,
-        willSpeakRangeOfSpeechString characterRange: NSRange,
-        utterance: AVSpeechUtterance
-    ) {
-        let speakingID = ObjectIdentifier(utterance)
-        Task { @MainActor [weak self] in
-            guard let self, !self.isProgrammaticStop, self.activeUtteranceID == speakingID else {
-                return
-            }
-            self.onSpokenRangeChanged?(characterRange)
-        }
-    }
-
     nonisolated func speechSynthesizer(
         _ synthesizer: AVSpeechSynthesizer,
         didFinish utterance: AVSpeechUtterance

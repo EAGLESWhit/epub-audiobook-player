@@ -36,6 +36,10 @@ final class SyncManager {
     private(set) var lastSyncDate: Date? = nil
     private(set) var cloudKitActive: Bool = false
 
+    /// In-memory cache of locally extracted book IDs so `LibraryView` scrolling avoids hitting
+    /// `FileManager.fileExists` synchronously on the main thread for every visible row.
+    private var extractedBookIDCache: [UUID: Bool] = [:]
+
     private var notificationTask: Task<Void, Never>?
 
     init() {
@@ -44,12 +48,25 @@ final class SyncManager {
 
     // MARK: - SwiftData + CloudKit ModelContainer Factory
 
+    /// Resolves one unified SwiftData store name shared by BOTH CloudKit and local-only configurations
+    /// so toggling iCloud Sync never switches to a separate empty database. Preserves legacy
+    /// `"EPUBPlaybackLocalStore"` if already present on disk for seamless upgrades.
+    static var unifiedStoreName: String {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL.temporaryDirectory
+        let legacyLocalURL = appSupport.appendingPathComponent("EPUBPlaybackLocalStore.store")
+        if FileManager.default.fileExists(atPath: legacyLocalURL.path) {
+            return "EPUBPlaybackLocalStore"
+        }
+        return "EPUBPlaybackStore"
+    }
+
     /// Builds the `ModelConfiguration` targeting the user's private CloudKit database
     /// so `Book` (including `@Attribute(.externalStorage)` `epubFileData` and `coverArtworkData`)
     /// and `Bookmark` records sync automatically across devices.
     static func privateCloudKitModelConfiguration(schema: Schema) -> ModelConfiguration {
         ModelConfiguration(
-            "EPUBPlaybackCloudStore",
+            unifiedStoreName,
             schema: schema,
             isStoredInMemoryOnly: false,
             allowsSave: true,
@@ -77,7 +94,7 @@ final class SyncManager {
         }
 
         let localConfig = ModelConfiguration(
-            "EPUBPlaybackLocalStore",
+            unifiedStoreName,
             schema: schema,
             isStoredInMemoryOnly: false,
             allowsSave: true,
@@ -190,7 +207,10 @@ final class SyncManager {
                 }
 
                 // Re-attach any unique bookmarks from the losing record to the winning record
-                if let loserBookmarks = loser.bookmarks {
+                if let loserBookmarks = loser.bookmarks, !loserBookmarks.isEmpty {
+                    if winner.bookmarks == nil {
+                        winner.bookmarks = []
+                    }
                     let existingKeys = Set((winner.bookmarks ?? []).map {
                         "\($0.chapterIndex):\($0.sentenceIndex):\($0.note ?? "")"
                     })
@@ -236,33 +256,38 @@ final class SyncManager {
 
     // MARK: - On-Demand Local Extraction of Synced Books
 
-    /// When opening a synced book on a second device where the `.epub` hasn't been unzipped locally yet,
-    /// automatically extracts the synced `book.epubFileData` into local storage for offline playback.
+    /// Extracts (if needed) and parses a book off the main actor so opening large EPUBs never freezes the UI.
     func ensureBookExtractedAndParsed(
         for book: Book,
         parser: EPUBParser = .shared
     ) async throws -> ParsedEPUB {
         let bookID = book.id
         let epubData = book.epubFileData
+        let hasCoverAlready = (book.coverArtworkData != nil)
+        let alreadyExtracted = book.isExtractedLocally
 
-        if book.isExtractedLocally {
-            return try parser.parseExistingOrExtract(bookID: bookID, epubData: epubData)
+        if !alreadyExtracted {
+            activelyExtractingBookIDs.insert(bookID)
         }
-
-        activelyExtractingBookIDs.insert(bookID)
         defer {
             activelyExtractingBookIDs.remove(bookID)
         }
 
         let parsed = try await Task.detached(priority: .userInitiated) {
-            try parser.parseExistingOrExtract(bookID: bookID, epubData: epubData)
+            try parser.parseExistingOrExtract(
+                bookID: bookID,
+                epubData: epubData,
+                skipCoverExtraction: hasCoverAlready
+            )
         }.value
+
+        extractedBookIDCache[bookID] = true
 
         book.totalChapters = max(1, parsed.chapters.count)
         let clampedChapter = min(max(0, book.currentChapterIndex), max(0, parsed.chapters.count - 1))
         book.currentChapterIndex = clampedChapter
         if parsed.chapters.indices.contains(clampedChapter) {
-            let mode = KeychainHelper.readingSegmentationMode
+            let mode = AppPreferences.readingSegmentationMode
             let chapterSegments = parsed.chapters[clampedChapter].segments(for: mode)
             book.totalSentencesInCurrentChapter = max(1, chapterSegments.count)
             book.currentSentenceIndex = min(max(0, book.currentSentenceIndex), max(0, chapterSegments.count - 1))
@@ -271,14 +296,31 @@ final class SyncManager {
         return parsed
     }
 
+    /// Invalidates cached extraction status for a book (e.g., after import or deletion).
+    func invalidateExtractionCache(for bookID: UUID? = nil) {
+        if let bookID {
+            extractedBookIDCache.removeValue(forKey: bookID)
+        } else {
+            extractedBookIDCache.removeAll()
+        }
+    }
+
     // MARK: - Sync Status Indicator for Library Items
 
-    /// Computes the live sync/offline status badge for a `Book` item in the Library View.
+    /// Computes the live sync/offline status badge for a `Book` item in the Library View without hitting disk on every render.
     func syncStatus(for book: Book) -> BookSyncStatus {
         if activelyExtractingBookIDs.contains(book.id) || isSyncingWithCloud {
             return .syncing
         }
-        if book.isExtractedLocally {
+        let isLocal: Bool
+        if let cached = extractedBookIDCache[book.id] {
+            isLocal = cached
+        } else {
+            let checked = book.isExtractedLocally
+            extractedBookIDCache[book.id] = checked
+            isLocal = checked
+        }
+        if isLocal {
             return .availableOffline
         }
         return .downloadingFromICloud

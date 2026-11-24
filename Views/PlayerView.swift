@@ -251,9 +251,14 @@ struct PlayerView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 10) {
                 Text(text)
-                    .font(isCurrent ? .title3.weight(.semibold) : .body)
+                    .font(
+                        .system(
+                            size: isCurrent ? player.readerFontScale.activeFontSize : player.readerFontScale.bodyFontSize,
+                            weight: isCurrent ? .semibold : .regular
+                        )
+                    )
                     .foregroundStyle(isCurrent ? Color.primary : Color.primary.opacity(0.76))
-                    .lineSpacing(5)
+                    .lineSpacing(player.readerFontScale.lineSpacing)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 if isBookmarked {
@@ -382,18 +387,22 @@ struct PlayerView: View {
                         .disabled(player.currentChapterIndex <= 0)
                         .accessibilityLabel("Previous Chapter")
 
-                        // Skip Back Sentence
+                        // Skip Back (15s or Previous Segment)
                         Button {
-                            player.skipBackwardSentence()
+                            player.skipBackward()
                         } label: {
-                            Image(systemName: "backward.frame.fill")
+                            Image(systemName: player.isTimeSkipActive ? "gobackward.15" : "backward.frame.fill")
                                 .font(.headline.weight(.semibold))
                                 .frame(width: 28, height: 28)
                         }
                         .buttonStyle(.glass)
                         .buttonBorderShape(.circle)
                         .glassEffectID("skipBackButton", in: glassNamespace)
-                        .accessibilityLabel("Previous \(player.segmentationMode.unitSingular)")
+                        .accessibilityLabel(
+                            player.isTimeSkipActive
+                                ? "Back 15 Seconds"
+                                : "Previous \(player.segmentationMode.unitSingular)"
+                        )
 
                         // Play / Pause
                         Button {
@@ -408,18 +417,22 @@ struct PlayerView: View {
                         .glassEffectID("playPauseButton", in: glassNamespace)
                         .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
 
-                        // Skip Forward Sentence
+                        // Skip Forward (15s or Next Segment)
                         Button {
-                            player.skipForwardSentence()
+                            player.skipForward()
                         } label: {
-                            Image(systemName: "forward.frame.fill")
+                            Image(systemName: player.isTimeSkipActive ? "goforward.15" : "forward.frame.fill")
                                 .font(.headline.weight(.semibold))
                                 .frame(width: 28, height: 28)
                         }
                         .buttonStyle(.glass)
                         .buttonBorderShape(.circle)
                         .glassEffectID("skipForwardButton", in: glassNamespace)
-                        .accessibilityLabel("Next \(player.segmentationMode.unitSingular)")
+                        .accessibilityLabel(
+                            player.isTimeSkipActive
+                                ? "Forward 15 Seconds"
+                                : "Next \(player.segmentationMode.unitSingular)"
+                        )
 
                         // Next Chapter
                         Button {
@@ -591,7 +604,33 @@ struct PlayerView: View {
                 .controlSize(.small)
                 .glassEffectID("sleepTimerActionPill", in: pillNamespace)
 
-                // 4. Bookmarks Tab Quick Shortcut Pill
+                // 4. Reader Text Size (Aa) Menu Pill
+                Menu {
+                    Section("Reader Text Size") {
+                        ForEach(ReaderFontScale.allCases) { scale in
+                            Button {
+                                withAnimation(.snappy) {
+                                    player.setReaderFontScale(scale)
+                                }
+                            } label: {
+                                HStack {
+                                    Text(scale.label)
+                                    if player.readerFontScale == scale {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Text("Aa")
+                        .font(.caption.weight(.bold))
+                }
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                .accessibilityLabel("Reader Text Size")
+
+                // 5. Bookmarks Tab Quick Shortcut Pill
                 Button {
                     initialChaptersSheetTab = .bookmarks
                     showingChaptersAndBookmarks = true

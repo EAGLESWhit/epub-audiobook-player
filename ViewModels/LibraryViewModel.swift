@@ -42,7 +42,7 @@ final class LibraryViewModel {
                 try parserInstance.importAndParseEPUB(from: url, bookID: newBookID)
             }.value
 
-            let mode = KeychainHelper.readingSegmentationMode
+            let mode = AppPreferences.readingSegmentationMode
             let firstChapterSegmentCount = parsed.chapters.first?.segments(for: mode).count ?? 1
 
             let book = Book(
@@ -63,9 +63,11 @@ final class LibraryViewModel {
 
             modelContext.insert(book)
             try modelContext.save()
+            syncManager.invalidateExtractionCache(for: newBookID)
             syncManager.resolveConflicts(in: modelContext)
         } catch {
             parser.removeExtractedFiles(for: newBookID)
+            syncManager.invalidateExtractionCache(for: newBookID)
             importErrorMessage = error.localizedDescription
         }
     }
@@ -99,6 +101,10 @@ final class LibraryViewModel {
 
         parser.removeExtractedFiles(for: bookID)
         cacheManager.clearCache(for: bookID)
+        syncManager.invalidateExtractionCache(for: bookID)
+        if AppPreferences.lastOpenedBookID == bookID {
+            AppPreferences.lastOpenedBookID = nil
+        }
 
         modelContext.delete(book)
         try? modelContext.save()

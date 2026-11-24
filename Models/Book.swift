@@ -63,11 +63,7 @@ final class Book {
 extension Book {
     /// Directory inside the app's Documents folder where this book's `.epub` archive is extracted.
     var localExtractionDirectoryURL: URL {
-        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-            ?? URL.temporaryDirectory
-        return documentsURL
-            .appendingPathComponent("ExtractedEPUBs", isDirectory: true)
-            .appendingPathComponent(id.uuidString, isDirectory: true)
+        EPUBParser.extractionDirectory(for: id)
     }
 
     /// Returns `true` when the `.epub` has already been unzipped onto this device's local storage.

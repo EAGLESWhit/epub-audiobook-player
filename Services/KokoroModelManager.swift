@@ -204,7 +204,19 @@ final class KokoroModelManager {
         let manager = try await downloadAndPrepareIfNeeded()
 
         if chunks.count == 1 {
-            return try await manager.synthesize(text: chunks[0], voice: voiceName, speed: speed)
+            do {
+                return try await manager.synthesize(text: chunks[0], voice: voiceName, speed: speed)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // If even a single short chunk fails (e.g. dense numbers/abbreviations exceeding frames),
+                // retry by splitting it into two equal halves on word boundaries before reloading CoreML.
+                let halves = Self.splitOversizedChunk(chunks[0], maxLength: max(60, chunks[0].count / 2))
+                if halves.count > 1 {
+                    return try await synthesizeChunks(halves, voiceName: voiceName, speed: speed)
+                }
+                throw error
+            }
         }
 
         var combinedSamples: [Float] = []

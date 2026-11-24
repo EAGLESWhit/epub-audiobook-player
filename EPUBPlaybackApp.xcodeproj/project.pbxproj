@@ -13,13 +13,18 @@
 		A10000040000000000000001 /* EPUBModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000040000000000000001 /* EPUBModels.swift */; };
 		A10000050000000000000001 /* EPUBParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000050000000000000001 /* EPUBParser.swift */; };
 		A10000060000000000000001 /* SampleEPUBGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000060000000000000001 /* SampleEPUBGenerator.swift */; };
-		A10000070000000000000001 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000070000000000000001 /* KeychainHelper.swift */; };
+		A10000070000000000000001 /* AppPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000070000000000000001 /* AppPreferences.swift */; };
 		A10000080000000000000001 /* AudioCacheManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000080000000000000001 /* AudioCacheManager.swift */; };
 		A10000100000000000000001 /* TTSProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000100000000000000001 /* TTSProvider.swift */; };
 		A10000110000000000000001 /* OfflineTTSProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000110000000000000001 /* OfflineTTSProvider.swift */; };
 		A10000120000000000000001 /* KokoroModelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000120000000000000001 /* KokoroModelManager.swift */; };
 		A10000130000000000000001 /* KokoroTTSProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000130000000000000001 /* KokoroTTSProvider.swift */; };
 		A10000140000000000000001 /* SyncManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000140000000000000001 /* SyncManager.swift */; };
+		A10000280000000000000001 /* AudioSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000280000000000000001 /* AudioSessionCoordinator.swift */; };
+		A10000290000000000000001 /* SleepTimerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000290000000000000001 /* SleepTimerController.swift */; };
+		A10000300000000000000001 /* NowPlayingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000300000000000000001 /* NowPlayingController.swift */; };
+		A10000310000000000000001 /* VoicePreviewPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000310000000000000001 /* VoicePreviewPlayer.swift */; };
+		A10000320000000000000001 /* OpenSourceLicensesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000320000000000000001 /* OpenSourceLicensesView.swift */; };
 		A10000150000000000000001 /* LibraryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000150000000000000001 /* LibraryViewModel.swift */; };
 		A10000160000000000000001 /* AudiobookPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000160000000000000001 /* AudiobookPlayer.swift */; };
 		A10000170000000000000001 /* BookCoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000170000000000000001 /* BookCoverView.swift */; };
@@ -52,13 +57,18 @@
 		A20000040000000000000001 /* EPUBModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPUBModels.swift; sourceTree = "<group>"; };
 		A20000050000000000000001 /* EPUBParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPUBParser.swift; sourceTree = "<group>"; };
 		A20000060000000000000001 /* SampleEPUBGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleEPUBGenerator.swift; sourceTree = "<group>"; };
-		A20000070000000000000001 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
+		A20000070000000000000001 /* AppPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPreferences.swift; sourceTree = "<group>"; };
 		A20000080000000000000001 /* AudioCacheManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCacheManager.swift; sourceTree = "<group>"; };
 		A20000100000000000000001 /* TTSProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSProvider.swift; sourceTree = "<group>"; };
 		A20000110000000000000001 /* OfflineTTSProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineTTSProvider.swift; sourceTree = "<group>"; };
 		A20000120000000000000001 /* KokoroModelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokoroModelManager.swift; sourceTree = "<group>"; };
 		A20000130000000000000001 /* KokoroTTSProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokoroTTSProvider.swift; sourceTree = "<group>"; };
 		A20000140000000000000001 /* SyncManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncManager.swift; sourceTree = "<group>"; };
+		A20000280000000000000001 /* AudioSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSessionCoordinator.swift; sourceTree = "<group>"; };
+		A20000290000000000000001 /* SleepTimerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SleepTimerController.swift; sourceTree = "<group>"; };
+		A20000300000000000000001 /* NowPlayingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingController.swift; sourceTree = "<group>"; };
+		A20000310000000000000001 /* VoicePreviewPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePreviewPlayer.swift; sourceTree = "<group>"; };
+		A20000320000000000000001 /* OpenSourceLicensesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSourceLicensesView.swift; sourceTree = "<group>"; };
 		A20000150000000000000001 /* LibraryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryViewModel.swift; sourceTree = "<group>"; };
 		A20000160000000000000001 /* AudiobookPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudiobookPlayer.swift; sourceTree = "<group>"; };
 		A20000170000000000000001 /* BookCoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookCoverView.swift; sourceTree = "<group>"; };
@@ -127,13 +137,17 @@
 			children = (
 				A20000050000000000000001 /* EPUBParser.swift */,
 				A20000060000000000000001 /* SampleEPUBGenerator.swift */,
-				A20000070000000000000001 /* KeychainHelper.swift */,
+				A20000070000000000000001 /* AppPreferences.swift */,
 				A20000080000000000000001 /* AudioCacheManager.swift */,
 				A20000100000000000000001 /* TTSProvider.swift */,
 				A20000110000000000000001 /* OfflineTTSProvider.swift */,
 				A20000120000000000000001 /* KokoroModelManager.swift */,
 				A20000130000000000000001 /* KokoroTTSProvider.swift */,
 				A20000140000000000000001 /* SyncManager.swift */,
+				A20000280000000000000001 /* AudioSessionCoordinator.swift */,
+				A20000290000000000000001 /* SleepTimerController.swift */,
+				A20000300000000000000001 /* NowPlayingController.swift */,
+				A20000310000000000000001 /* VoicePreviewPlayer.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -156,6 +170,7 @@
 				A20000200000000000000001 /* ChaptersAndBookmarksSheet.swift */,
 				A20000210000000000000001 /* VoicePickerSheet.swift */,
 				A20000220000000000000001 /* SettingsSheet.swift */,
+				A20000320000000000000001 /* OpenSourceLicensesView.swift */,
 				A20000230000000000000001 /* LibraryView.swift */,
 			);
 			path = Views;
@@ -274,13 +289,17 @@
 				A10000040000000000000001 /* EPUBModels.swift in Sources */,
 				A10000050000000000000001 /* EPUBParser.swift in Sources */,
 				A10000060000000000000001 /* SampleEPUBGenerator.swift in Sources */,
-				A10000070000000000000001 /* KeychainHelper.swift in Sources */,
+				A10000070000000000000001 /* AppPreferences.swift in Sources */,
 				A10000080000000000000001 /* AudioCacheManager.swift in Sources */,
 				A10000100000000000000001 /* TTSProvider.swift in Sources */,
 				A10000110000000000000001 /* OfflineTTSProvider.swift in Sources */,
 				A10000120000000000000001 /* KokoroModelManager.swift in Sources */,
 				A10000130000000000000001 /* KokoroTTSProvider.swift in Sources */,
 				A10000140000000000000001 /* SyncManager.swift in Sources */,
+				A10000280000000000000001 /* AudioSessionCoordinator.swift in Sources */,
+				A10000290000000000000001 /* SleepTimerController.swift in Sources */,
+				A10000300000000000000001 /* NowPlayingController.swift in Sources */,
+				A10000310000000000000001 /* VoicePreviewPlayer.swift in Sources */,
 				A10000150000000000000001 /* LibraryViewModel.swift in Sources */,
 				A10000160000000000000001 /* AudiobookPlayer.swift in Sources */,
 				A10000170000000000000001 /* BookCoverView.swift in Sources */,
@@ -289,6 +308,7 @@
 				A10000200000000000000001 /* ChaptersAndBookmarksSheet.swift in Sources */,
 				A10000210000000000000001 /* VoicePickerSheet.swift in Sources */,
 				A10000220000000000000001 /* SettingsSheet.swift in Sources */,
+				A10000320000000000000001 /* OpenSourceLicensesView.swift in Sources */,
 				A10000230000000000000001 /* LibraryView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

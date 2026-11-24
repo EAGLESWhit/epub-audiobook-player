@@ -17,12 +17,15 @@ struct LibraryView: View {
 
     @State private var libraryViewModel = LibraryViewModel()
     @State private var player = AudiobookPlayer()
-    @State private var useGridLayout: Bool = false
+    @AppStorage("library_use_grid_layout")
+    private var useGridLayout: Bool = false
 
     @AppStorage("library_sort_option")
     private var sortOptionRawValue: String = LibrarySortOption.recentlyPlayed.rawValue
     @AppStorage("library_sort_ascending")
     private var sortAscending: Bool = false
+
+    @State private var didAttemptLastBookRestore: Bool = false
 
     @Namespace private var glassNamespace
 
@@ -254,18 +257,25 @@ struct LibraryView: View {
         .alert(
             "EPUB Error",
             isPresented: Binding(
-                get: { libraryViewModel.importErrorMessage != nil || player.errorMessage != nil },
+                get: {
+                    libraryViewModel.importErrorMessage != nil
+                        || (!player.isPresentingFullPlayer && player.errorMessage != nil)
+                },
                 set: { newValue in
                     if !newValue {
                         libraryViewModel.importErrorMessage = nil
-                        player.errorMessage = nil
+                        if !player.isPresentingFullPlayer {
+                            player.errorMessage = nil
+                        }
                     }
                 }
             )
         ) {
             Button("OK", role: .cancel) {
                 libraryViewModel.importErrorMessage = nil
-                player.errorMessage = nil
+                if !player.isPresentingFullPlayer {
+                    player.errorMessage = nil
+                }
             }
         } message: {
             Text(libraryViewModel.importErrorMessage ?? player.errorMessage ?? "")
@@ -273,15 +283,22 @@ struct LibraryView: View {
         .onAppear {
             player.modelContext = modelContext
             syncManager.resolveConflicts(in: modelContext)
-            if ProcessInfo.processInfo.arguments.contains("--auto-open-first-book"),
-               let firstBook = books.first {
-                openBookInPlayer(firstBook)
+        }
+        .task {
+            guard !didAttemptLastBookRestore else { return }
+            didAttemptLastBookRestore = true
+            guard player.currentBook == nil,
+                  let lastBookID = AppPreferences.lastOpenedBookID,
+                  let lastBook = books.first(where: { $0.id == lastBookID }) else {
+                return
             }
+            await player.openBook(lastBook, autoPlay: false, presentFullPlayer: false)
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background {
                 player.handleAppMovedToBackground()
             } else if newPhase == .active {
+                VoiceOption.invalidateOnDeviceVoiceCache()
                 syncManager.resolveConflicts(in: modelContext)
             }
         }

@@ -1,14 +1,16 @@
 import SwiftUI
 
 /// Settings sheet allowing users to choose their default narrator voice, download or remove on-device
-/// neural engine voices, view Apple voice download steps, configure paragraph/sentence parsing,
-/// and toggle iCloud Sync.
+/// neural engine voices, view Apple voice download steps, configure reading/skip/pre-render options,
+/// toggle iCloud Sync, and inspect open-source licenses.
 struct SettingsSheet: View {
     @Bindable var player: AudiobookPlayer
 
     @Environment(\.dismiss) private var dismiss
-    @State private var preferredOfflineVoiceID: String = KeychainHelper.preferredOfflineVoiceID
-    @State private var segmentationMode: ReadingSegmentationMode = KeychainHelper.readingSegmentationMode
+    @State private var preferredOfflineVoiceID: String = AppPreferences.preferredOfflineVoiceID
+    @State private var segmentationMode: ReadingSegmentationMode = AppPreferences.readingSegmentationMode
+    @State private var skipControlMode: SkipControlMode = AppPreferences.skipControlMode
+    @State private var autoPreRenderWhileCharging: Bool = AppPreferences.autoPreRenderWhileCharging
     @State private var isICloudSyncEnabled: Bool = SyncManager.isICloudSyncUserEnabled
     @State private var didChangeICloudSyncSetting: Bool = false
     @State private var onDeviceVoices: [VoiceOption] = []
@@ -136,7 +138,7 @@ struct SettingsSheet: View {
                     Text("How to Download Apple's Enhanced & Premium Voices")
                 }
 
-                // 4. Reading & Text Parsing Granularity
+                // 4. Reading, Parsing & Skip Controls
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Parse Text By")
@@ -154,10 +156,42 @@ struct SettingsSheet: View {
                         }
                     }
                     .padding(.vertical, 2)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Skip Buttons")
+                            .font(.subheadline)
+
+                        Picker("Skip Buttons", selection: $skipControlMode) {
+                            ForEach(SkipControlMode.allCases) { mode in
+                                Text(mode.label).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .onChange(of: skipControlMode) { _, newMode in
+                            player.setSkipControlMode(newMode)
+                        }
+                    }
+                    .padding(.vertical, 2)
+
+                    if kokoroManager.state.isReady {
+                        Toggle(isOn: $autoPreRenderWhileCharging) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Pre-Render Next Chapter on Power")
+                                    .font(.subheadline)
+                                Text("Automatically caches the next chapter's neural audio while your iPhone is charging.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .onChange(of: autoPreRenderWhileCharging) { _, enabled in
+                            player.setAutoPreRenderWhileCharging(enabled)
+                        }
+                    }
                 } header: {
                     Text("Reading & Parsing")
                 } footer: {
-                    Text("Paragraph (default) narrates full paragraphs smoothly with fewer pauses and fewer awkward splits. Choose Sentence to navigate and highlight one sentence at a time.")
+                    Text("Paragraph (default) narrates full paragraphs smoothly with fewer pauses. 15-Second Skip seeks within Neural Engine audio and steps by paragraph or sentence for Apple voices.")
                 }
 
                 // 5. iCloud Sync Toggle
@@ -181,6 +215,17 @@ struct SettingsSheet: View {
                 } footer: {
                     Text("Syncs your imported .epub files, cover artwork, current chapter and reading position, playback speed, narrator voice selection, and bookmarks with notes to iCloud so your other devices can pick up right where you left off.")
                 }
+
+                // 6. About & Open-Source Licenses
+                Section {
+                    NavigationLink {
+                        OpenSourceLicensesView()
+                    } label: {
+                        Label("About & Open-Source Licenses", systemImage: "doc.text")
+                    }
+                } header: {
+                    Text("About")
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -200,7 +245,7 @@ struct SettingsSheet: View {
                 Button("Remove Model (\(kokoroManager.installedDiskSizeText))", role: .destructive) {
                     Task {
                         await player.removeKokoroModels()
-                        preferredOfflineVoiceID = KeychainHelper.preferredOfflineVoiceID
+                        preferredOfflineVoiceID = AppPreferences.preferredOfflineVoiceID
                     }
                 }
                 Button("Cancel", role: .cancel) {}
@@ -209,10 +254,11 @@ struct SettingsSheet: View {
             }
             .task {
                 kokoroManager.refreshInstalledStatus()
-                await VoiceOption.refreshMacBridgeVoices()
                 onDeviceVoices = VoiceOption.availableOnDeviceVoices()
-                preferredOfflineVoiceID = KeychainHelper.preferredOfflineVoiceID
-                segmentationMode = KeychainHelper.readingSegmentationMode
+                preferredOfflineVoiceID = AppPreferences.preferredOfflineVoiceID
+                segmentationMode = AppPreferences.readingSegmentationMode
+                skipControlMode = AppPreferences.skipControlMode
+                autoPreRenderWhileCharging = AppPreferences.autoPreRenderWhileCharging
                 isICloudSyncEnabled = SyncManager.isICloudSyncUserEnabled
             }
         }

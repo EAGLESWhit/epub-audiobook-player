@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// **Chapters & Bookmarks** sheet with a segmented picker:
-/// - **Chapters:** Jump between chapters and view sentence counts and active chapter progress.
-/// - **Bookmarks:** View all CloudKit-synced sentence bookmarks with notes, tap-to-jump playback, edit note, and swipe-to-delete.
+/// - **Chapters:** Jump between chapters, see segment counts, and manually pre-render chapters for offline Neural playback.
+/// - **Bookmarks:** View all CloudKit-synced bookmarks with notes, tap-to-jump playback, edit note, and swipe-to-delete.
 struct ChaptersAndBookmarksSheet: View {
     enum Tab: String, CaseIterable, Identifiable {
         case chapters = "Chapters"
@@ -16,10 +16,15 @@ struct ChaptersAndBookmarksSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var editingBookmark: Bookmark? = nil
     @State private var editedNoteText: String = ""
+    @State private var chapterCacheCounts: [Int: (cached: Int, total: Int)] = [:]
 
     init(player: AudiobookPlayer, initialTab: Tab = .chapters) {
         self.player = player
         self._selectedTab = State(initialValue: initialTab)
+    }
+
+    private var canPreRenderNeuralAudio: Bool {
+        player.selectedVoice.isKokoro && player.kokoroModelManager.state.isReady
     }
 
     var body: some View {
@@ -54,6 +59,14 @@ struct ChaptersAndBookmarksSheet: View {
             .sheet(item: $editingBookmark) { bookmark in
                 editBookmarkNoteSheet(for: bookmark)
             }
+            .task {
+                await refreshChapterCacheCounts()
+            }
+            .onChange(of: player.preRenderingChapterIndex) { _, _ in
+                Task {
+                    await refreshChapterCacheCounts()
+                }
+            }
         }
     }
 
@@ -62,9 +75,53 @@ struct ChaptersAndBookmarksSheet: View {
     private var chaptersTabContent: some View {
         List {
             if player.currentBook != nil {
-                Section("Chapters (\(player.chapters.count))") {
+                if let activeIndex = player.preRenderingChapterIndex,
+                   player.chapters.indices.contains(activeIndex) {
+                    Section {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Label(
+                                    "Pre-Rendering Ch. \(activeIndex + 1)",
+                                    systemImage: "sparkles"
+                                )
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.purple)
+
+                                Spacer()
+
+                                Text("\(player.preRenderCompletedCount)/\(max(1, player.preRenderTotalCount))")
+                                    .font(.caption.monospacedDigit().weight(.semibold))
+                                    .foregroundStyle(.secondary)
+
+                                Button {
+                                    player.cancelChapterPreRender()
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Cancel Pre-Render")
+                            }
+
+                            ProgressView(
+                                value: Double(player.preRenderCompletedCount),
+                                total: Double(max(1, player.preRenderTotalCount))
+                            )
+                            .tint(.purple)
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+
+                Section {
                     ForEach(player.chapters) { chapter in
                         chapterRow(for: chapter)
+                    }
+                } header: {
+                    Text("Chapters (\(player.chapters.count))")
+                } footer: {
+                    if canPreRenderNeuralAudio {
+                        Text("Tap the download icon on any chapter to pre-render its Neural Engine audio in advance for zero-latency playback.")
                     }
                 }
             } else {
@@ -77,52 +134,117 @@ struct ChaptersAndBookmarksSheet: View {
     @ViewBuilder
     private func chapterRow(for chapter: EPUBChapter) -> some View {
         let isCurrentChapter = (chapter.index == player.currentChapterIndex)
+        let isPreRenderingThis = (player.preRenderingChapterIndex == chapter.index)
+        let cacheCounts = chapterCacheCounts[chapter.index]
+        let isFullyCached = (cacheCounts?.total ?? 0) > 0 && (cacheCounts?.cached ?? 0) >= (cacheCounts?.total ?? 1)
 
-        Button {
-            player.selectChapter(at: chapter.index, sentenceIndex: 0, autoPlay: true)
-            dismiss()
-        } label: {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(isCurrentChapter ? Color.accentColor : Color.secondary.opacity(0.14))
-                        .frame(width: 30, height: 30)
+        HStack(spacing: 12) {
+            Button {
+                player.selectChapter(at: chapter.index, sentenceIndex: 0, autoPlay: true)
+                dismiss()
+            } label: {
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(isCurrentChapter ? Color.accentColor : Color.secondary.opacity(0.14))
+                            .frame(width: 30, height: 30)
 
-                    if isCurrentChapter && player.isPlaying {
-                        Image(systemName: "speaker.wave.2.fill")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.white)
-                    } else {
-                        Text("\(chapter.index + 1)")
-                            .font(.caption.monospacedDigit().weight(.bold))
-                            .foregroundStyle(isCurrentChapter ? .white : .secondary)
+                        if isCurrentChapter && player.isPlaying {
+                            Image(systemName: "speaker.wave.2.fill")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.white)
+                        } else {
+                            Text("\(chapter.index + 1)")
+                                .font(.caption.monospacedDigit().weight(.bold))
+                                .foregroundStyle(isCurrentChapter ? .white : .secondary)
+                        }
                     }
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(chapter.title)
+                            .font(.subheadline.weight(isCurrentChapter ? .bold : .medium))
+                            .foregroundStyle(isCurrentChapter ? Color.accentColor : .primary)
+                            .lineLimit(2)
+
+                        let segmentCount = chapter.segments(for: player.segmentationMode).count
+                        HStack(spacing: 6) {
+                            Text("\(segmentCount) \(segmentCount == 1 ? player.segmentationMode.unitSingular.lowercased() : player.segmentationMode.unitPlural)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            if canPreRenderNeuralAudio && isFullyCached {
+                                Label("Pre-Rendered", systemImage: "checkmark.circle.fill")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.purple)
+                            }
+                        }
+                    }
+
+                    Spacer(minLength: 4)
                 }
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(chapter.title)
-                        .font(.subheadline.weight(isCurrentChapter ? .bold : .medium))
-                        .foregroundStyle(isCurrentChapter ? Color.accentColor : .primary)
-                        .lineLimit(2)
-
-                    let segmentCount = chapter.segments(for: player.segmentationMode).count
-                    Text("\(segmentCount) \(segmentCount == 1 ? player.segmentationMode.unitSingular.lowercased() : player.segmentationMode.unitPlural)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer(minLength: 8)
-
-                if isCurrentChapter {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.title3)
-                        .foregroundStyle(Color.accentColor)
-                }
+                .contentShape(Rectangle())
             }
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+
+            if canPreRenderNeuralAudio && !isFullyCached {
+                if isPreRenderingThis {
+                    Button {
+                        player.cancelChapterPreRender()
+                    } label: {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.purple)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Cancel Pre-Render for Chapter \(chapter.index + 1)")
+                } else {
+                    Button {
+                        player.preRenderChapter(at: chapter.index)
+                    } label: {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.title3)
+                            .foregroundStyle(.purple)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Pre-Render Chapter \(chapter.index + 1)")
+                }
+            } else if isCurrentChapter {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(Color.accentColor)
+            }
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, 4)
+    }
+
+    private func refreshChapterCacheCounts() async {
+        guard canPreRenderNeuralAudio,
+              let bookID = player.currentBook?.id else {
+            chapterCacheCounts = [:]
+            return
+        }
+        let voiceID = player.selectedVoice.id
+        let mode = player.segmentationMode
+        let chaptersSnapshot = player.chapters
+
+        let counts = await Task.detached(priority: .utility) { () -> [Int: (cached: Int, total: Int)] in
+            var result: [Int: (cached: Int, total: Int)] = [:]
+            for chapter in chaptersSnapshot {
+                let speakable = chapter
+                    .segments(for: mode)
+                    .filter { $0.contains(where: { $0.isLetter || $0.isNumber }) }
+                let cached = AudioCacheManager.shared.cachedSentenceCount(
+                    bookID: bookID,
+                    voiceID: voiceID,
+                    chapterIndex: chapter.index,
+                    sentences: speakable
+                )
+                result[chapter.index] = (cached, speakable.count)
+            }
+            return result
+        }.value
+
+        chapterCacheCounts = counts
     }
 
     // MARK: - Tab 2: Synced Sentence Bookmarks & Notes

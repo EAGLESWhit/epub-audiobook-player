@@ -57,16 +57,20 @@ struct MiniPlayerView: View {
 
                     HStack(spacing: 6) {
                         Button {
-                            player.skipBackwardSentence()
+                            player.skipBackward()
                         } label: {
-                            Image(systemName: "backward.frame.fill")
+                            Image(systemName: player.isTimeSkipActive ? "gobackward.15" : "backward.frame.fill")
                                 .font(.caption.weight(.semibold))
                                 .frame(width: 20, height: 20)
                         }
                         .buttonStyle(.glass)
                         .buttonBorderShape(.circle)
                         .glassEffectID("skipBackButton", in: glassNamespace)
-                        .accessibilityLabel("Previous \(player.segmentationMode.unitSingular)")
+                        .accessibilityLabel(
+                            player.isTimeSkipActive
+                                ? "Back 15 Seconds"
+                                : "Previous \(player.segmentationMode.unitSingular)"
+                        )
 
                         Button {
                             player.togglePlayPause()
@@ -81,16 +85,20 @@ struct MiniPlayerView: View {
                         .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
 
                         Button {
-                            player.skipForwardSentence()
+                            player.skipForward()
                         } label: {
-                            Image(systemName: "forward.frame.fill")
+                            Image(systemName: player.isTimeSkipActive ? "goforward.15" : "forward.frame.fill")
                                 .font(.caption.weight(.semibold))
                                 .frame(width: 20, height: 20)
                         }
                         .buttonStyle(.glass)
                         .buttonBorderShape(.circle)
                         .glassEffectID("skipForwardButton", in: glassNamespace)
-                        .accessibilityLabel("Next \(player.segmentationMode.unitSingular)")
+                        .accessibilityLabel(
+                            player.isTimeSkipActive
+                                ? "Forward 15 Seconds"
+                                : "Next \(player.segmentationMode.unitSingular)"
+                        )
                     }
                 }
                 .padding(.horizontal, 14)

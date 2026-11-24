@@ -1,7 +1,37 @@
 import SwiftUI
 import UIKit
 
-/// Displays a book's cover artwork from `Data` or a stylized typographic fallback cover.
+/// Main-actor in-memory decoded `UIImage` cache for book cover artwork so SwiftUI redraws
+/// and scrolling library lists never re-decode JPEG/PNG `Data` on the main thread.
+@MainActor
+enum CoverImageCache {
+    private static let cache: NSCache<NSString, UIImage> = {
+        let c = NSCache<NSString, UIImage>()
+        c.countLimit = 64
+        c.totalCostLimit = 32 * 1024 * 1024 // 32 MB decoded bitmap budget
+        return c
+    }()
+
+    static func image(for data: Data?) -> UIImage? {
+        guard let data, !data.isEmpty else { return nil }
+        let key = cacheKey(for: data)
+        if let cached = cache.object(forKey: key) {
+            return cached
+        }
+        guard let decoded = UIImage(data: data) else { return nil }
+        let pixelCost = Int(decoded.size.width * decoded.scale * decoded.size.height * decoded.scale * 4)
+        cache.setObject(decoded, forKey: key, cost: max(1, pixelCost))
+        return decoded
+    }
+
+    private static func cacheKey(for data: Data) -> NSString {
+        let prefix = data.prefix(24).base64EncodedString()
+        let suffix = data.suffix(24).base64EncodedString()
+        return "\(data.count)-\(prefix)-\(suffix)" as NSString
+    }
+}
+
+/// Displays a book's cover artwork from `Data` (via `CoverImageCache`) or a stylized typographic fallback cover.
 struct BookCoverView: View {
     let title: String
     let author: String
@@ -11,7 +41,7 @@ struct BookCoverView: View {
     var body: some View {
         Color.clear
             .overlay {
-                if let artworkData, let uiImage = UIImage(data: artworkData) {
+                if let uiImage = CoverImageCache.image(for: artworkData) {
                     Image(uiImage: uiImage)
                         .resizable()
                         .scaledToFill()
@@ -62,7 +92,7 @@ struct BookCoverView: View {
 }
 
 /// Renders a soft, ambient blurred backdrop derived from the current book's cover art
-/// so iOS 27 Liquid Glass controls refract and adapt naturally in both Light and Dark Mode.
+/// rasterized via `.drawingGroup()` so scrolling reader text stays locked at 120 fps.
 struct AmbientCoverBackdropView: View {
     let artworkData: Data?
     @Environment(\.colorScheme) private var colorScheme
@@ -70,7 +100,7 @@ struct AmbientCoverBackdropView: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack {
-                if let artworkData, let uiImage = UIImage(data: artworkData) {
+                if let uiImage = CoverImageCache.image(for: artworkData) {
                     Image(uiImage: uiImage)
                         .resizable()
                         .scaledToFill()
@@ -101,6 +131,7 @@ struct AmbientCoverBackdropView: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
+            .drawingGroup()
         }
         .ignoresSafeArea()
     }

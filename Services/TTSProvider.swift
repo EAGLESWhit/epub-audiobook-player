@@ -22,9 +22,6 @@ protocol TTSProvider: AnyObject {
     /// Invoked on the main actor when the current segment finishes speaking naturally.
     var onSentenceFinished: (@MainActor () -> Void)? { get set }
 
-    /// Invoked on the main actor as on-device speech progresses through words within the active segment.
-    var onSpokenRangeChanged: (@MainActor (NSRange) -> Void)? { get set }
-
     /// Speaks a sentence using the specified voice, playback rate (`0.75x`–`2.0x`), and volume (`0.0`–`1.0`).
     func speak(_ request: TTSSpeechRequest)
 

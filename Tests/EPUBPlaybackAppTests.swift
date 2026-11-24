@@ -51,7 +51,7 @@ struct EPUBPlaybackAppTests {
 
         // Verify default when unset is .paragraph
         UserDefaults.standard.removeObject(forKey: defaultsKey)
-        #expect(KeychainHelper.readingSegmentationMode == .paragraph)
+        #expect(AppPreferences.readingSegmentationMode == .paragraph)
 
         // Verify XHTML parsing keeps multi-sentence, line-wrapped paragraphs intact
         let sampleXHTML = """
@@ -80,10 +80,10 @@ struct EPUBPlaybackAppTests {
         #expect(player.segmentationMode == .paragraph)
         player.setSegmentationMode(.sentence)
         #expect(player.segmentationMode == .sentence)
-        #expect(KeychainHelper.readingSegmentationMode == .sentence)
+        #expect(AppPreferences.readingSegmentationMode == .sentence)
         player.setSegmentationMode(.paragraph)
         #expect(player.segmentationMode == .paragraph)
-        #expect(KeychainHelper.readingSegmentationMode == .paragraph)
+        #expect(AppPreferences.readingSegmentationMode == .paragraph)
     }
 
     // MARK: - Phase 2: CloudKit Conflict Resolution & On-Demand Extraction
@@ -489,6 +489,251 @@ struct EPUBPlaybackAppTests {
         // 4. ExtractedEPUBs root is excluded from iCloud backups
         let extractedRootValues = try EPUBParser.extractedRootDirectory().resourceValues(forKeys: [.isExcludedFromBackupKey])
         #expect(extractedRootValues.isExcludedFromBackup == true)
+
+        // 5. Fallback-only DRM check: an EPUB with quirky encryption.xml encrypting a non-chapter CSS file
+        // alongside valid readable chapters still imports cleanly, AND oversized metadata is clamped to 250 chars.
+        let longTitle = String(repeating: "A", count: 400)
+        let longAuthor = String(repeating: "B", count: 350)
+        let quirkyEncryptionZIP = try makeInMemoryZIP { archive in
+            let encryption = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+              <enc:EncryptedData>
+                <enc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes128-cbc"/>
+                <enc:CipherData><enc:CipherReference URI="OEBPS/styles/extra.css"/></enc:CipherData>
+              </enc:EncryptedData>
+            </encryption>
+            """
+            let container = """
+            <?xml version="1.0"?>
+            <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+              <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+            </container>
+            """
+            let opf = """
+            <?xml version="1.0"?>
+            <package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+              <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+                <dc:title>\(longTitle)</dc:title>
+                <dc:creator>\(longAuthor)</dc:creator>
+              </metadata>
+              <manifest>
+                <item id="c1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+              </manifest>
+              <spine><itemref idref="c1"/></spine>
+            </package>
+            """
+            let chapter = """
+            <?xml version="1.0"?>
+            <html xmlns="http://www.w3.org/1999/xhtml">
+              <body><h1>Readable Chapter</h1><p>Fallback DRM allows non-blocking encryption entries when chapters parse cleanly.</p></body>
+            </html>
+            """
+            try addZIPFile(to: archive, path: "META-INF/encryption.xml", data: Data(encryption.utf8))
+            try addZIPFile(to: archive, path: "META-INF/container.xml", data: Data(container.utf8))
+            try addZIPFile(to: archive, path: "OEBPS/content.opf", data: Data(opf.utf8))
+            try addZIPFile(to: archive, path: "OEBPS/chapter1.xhtml", data: Data(chapter.utf8))
+        }
+        let quirkyBookID = UUID()
+        defer { EPUBParser.shared.removeExtractedFiles(for: quirkyBookID) }
+        let quirkyParsed = try EPUBParser.shared.extractAndParseEPUB(from: quirkyEncryptionZIP, bookID: quirkyBookID)
+        #expect(quirkyParsed.chapters.count == 1)
+        #expect(quirkyParsed.title.count == 250)
+        #expect(quirkyParsed.author.count == 250)
+
+        // 6. Fast JSON chapter cache round-trip + skipCoverExtraction support
+        let cachedReload = try EPUBParser.shared.parseExtractedEPUB(
+            at: EPUBParser.extractionDirectory(for: quirkyBookID),
+            skipCoverExtraction: true
+        )
+        #expect(cachedReload.chapters == quirkyParsed.chapters)
+        #expect(cachedReload.coverArtworkData == nil)
+    }
+
+    @Test("AudioCacheManager enforces LRU byte cap and compresses Neural WAV audio to compact AAC .m4a")
+    func testAudioCacheLRUEvictionAndAACCompression() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AudioCacheLRUTest-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let bookID = UUID()
+        let voiceID = "kokoro:af_heart"
+
+        // 1. Test LRU eviction under a tight 10 KB budget
+        let lruCache = AudioCacheManager(rootDirectoryURL: tempRoot, maxCacheBytes: 10_240)
+        let payload4KB = Data(repeating: 0x55, count: 4_096)
+
+        let url1 = try lruCache.saveAudioData(payload4KB, bookID: bookID, voiceID: voiceID, chapterIndex: 0, sentenceText: "Clip One", fileExtension: "m4a")
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -300)], ofItemAtPath: url1.path)
+
+        let url2 = try lruCache.saveAudioData(payload4KB, bookID: bookID, voiceID: voiceID, chapterIndex: 0, sentenceText: "Clip Two", fileExtension: "m4a")
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -200)], ofItemAtPath: url2.path)
+
+        let url3 = try lruCache.saveAudioData(payload4KB, bookID: bookID, voiceID: voiceID, chapterIndex: 0, sentenceText: "Clip Three", fileExtension: "m4a")
+
+        #expect(lruCache.totalCachedBytes() <= 10_240)
+        #expect(!FileManager.default.fileExists(atPath: url1.path)) // Oldest clip evicted
+        #expect(FileManager.default.fileExists(atPath: url3.path))  // Newest clip preserved
+
+        // 2. Test WAV -> 64 kbps AAC .m4a compression + exact AVAudioFile duration reading
+        let aacCache = AudioCacheManager(rootDirectoryURL: tempRoot, maxCacheBytes: 20 * 1024 * 1024)
+        let sixSecondSamples = (0..<(24_000 * 6)).map { i -> Float in
+            sin(Float(i) * 2.0 * .pi * 440.0 / 24_000.0) * 0.25
+        }
+        let rawWAV = KokoroModelManager.makePCM16WAV(from: sixSecondSamples, sampleRate: 24_000)
+        let compressedURL = try aacCache.saveCompressedNeuralAudio(
+            wavData: rawWAV,
+            bookID: bookID,
+            voiceID: voiceID,
+            chapterIndex: 1,
+            sentenceText: "Compressed neural test clip"
+        )
+        #expect(compressedURL.pathExtension == "m4a")
+        let compressedSize = (try? compressedURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? rawWAV.count
+        #expect(compressedSize < rawWAV.count / 2)
+
+        let detectedDuration = try #require(NowPlayingController.audioFileDurationSeconds(at: compressedURL))
+        #expect(detectedDuration > 5.8 && detectedDuration < 6.3)
+    }
+
+    @Test("SyncManager.resolveConflicts preserves loser bookmarks even when winner.bookmarks is nil")
+    func testResolveConflictsPreservesBookmarksWhenWinnerBookmarksNil() throws {
+        let schema = Schema([Book.self, Bookmark.self])
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(for: schema, configurations: [config])
+        let context = container.mainContext
+
+        let sharedID = UUID()
+        let loser = Book(
+            id: sharedID,
+            title: "Conflict Book",
+            author: "Author",
+            lastPlayedDate: Date(timeIntervalSinceNow: -600)
+        )
+        let winner = Book(
+            id: sharedID,
+            title: "Conflict Book",
+            author: "Author",
+            lastPlayedDate: Date()
+        )
+        winner.bookmarks = nil
+
+        let bookmark = Bookmark(
+            book: loser,
+            chapterIndex: 1,
+            chapterTitle: "Chapter 2",
+            sentenceIndex: 3,
+            sentenceText: "Saved quote",
+            note: "Must survive conflict merge"
+        )
+        loser.bookmarks = [bookmark]
+
+        context.insert(loser)
+        context.insert(winner)
+        context.insert(bookmark)
+        try context.save()
+
+        SyncManager.shared.resolveConflicts(in: context)
+
+        let remainingBooks = try context.fetch(FetchDescriptor<Book>())
+        #expect(remainingBooks.count == 1)
+        let surviving = try #require(remainingBooks.first)
+        #expect(surviving.bookmarks?.count == 1)
+        #expect(surviving.bookmarks?.first?.note == "Must survive conflict merge")
+    }
+
+    @Test("AudiobookPlayer auto-resumes after audio interruption, but stays paused after manual pause or headphone disconnect")
+    func testAudioInterruptionAutoResumeAndRouteDisconnect() async throws {
+        let sampleURL = try SampleEPUBGenerator.createSampleEPUBFile()
+        let bookID = UUID()
+        defer { EPUBParser.shared.removeExtractedFiles(for: bookID) }
+        let (parsed, epubData) = try EPUBParser.shared.importAndParseEPUB(from: sampleURL, bookID: bookID)
+
+        let book = Book(
+            id: bookID,
+            title: parsed.title,
+            author: parsed.author,
+            coverArtworkData: parsed.coverArtworkData,
+            epubFileData: epubData
+        )
+
+        let player = AudiobookPlayer()
+        await player.openBook(book, autoPlay: false, presentFullPlayer: false)
+        player.selectVoice(VoiceOption.defaultOfflineVoice())
+
+        // Start playback -> simulate interruption -> verify auto-resume
+        player.play()
+        #expect(player.isPlaying)
+        player.handleAudioSessionDidBecomeInactive()
+        #expect(!player.isPlaying)
+        player.handleAudioSessionResumptionRecommended()
+        #expect(player.isPlaying)
+
+        // Manual pause -> resumption hint must NOT auto-resume
+        player.pause()
+        #expect(!player.isPlaying)
+        player.handleAudioSessionResumptionRecommended()
+        #expect(!player.isPlaying)
+
+        // Headphone disconnect -> pauses and resumption hint must NOT auto-resume
+        player.play()
+        #expect(player.isPlaying)
+        player.handleAudioRouteDisconnected()
+        #expect(!player.isPlaying)
+        player.handleAudioSessionResumptionRecommended()
+        #expect(!player.isPlaying)
+
+        player.closeBook()
+    }
+
+    @Test("NowPlayingController scrubbing timeline, CoverImageCache identity, and AppPreferences persistence work cleanly")
+    func testNowPlayingScrubbingCoverCacheAndPreferences() throws {
+        // 1. Timeline scrubbing mapping
+        let controller = NowPlayingController()
+        let voice = VoiceOption.defaultOfflineVoice()
+        controller.rebuildChapterDurations(
+            segments: [
+                String(repeating: "word ", count: 26), // ~10s
+                String(repeating: "word ", count: 52), // ~20s
+                String(repeating: "word ", count: 26)  // ~10s
+            ],
+            bookID: nil,
+            voice: voice,
+            chapterIndex: 0
+        )
+        #expect(controller.segmentIndex(forElapsedSeconds: 0, segmentCount: 3) == 0)
+        #expect(controller.segmentIndex(forElapsedSeconds: 15, segmentCount: 3) == 1)
+        #expect(controller.segmentIndex(forElapsedSeconds: 35, segmentCount: 3) == 2)
+        #expect(controller.segmentIndex(forElapsedSeconds: 999, segmentCount: 3) == 2)
+
+        // 2. CoverImageCache returns cached UIImage instance without re-decoding
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 64))
+        let img = renderer.image { ctx in
+            UIColor.systemTeal.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+        }
+        let pngData = try #require(img.pngData())
+        let first = try #require(CoverImageCache.image(for: pngData))
+        let second = try #require(CoverImageCache.image(for: pngData))
+        #expect(first === second)
+
+        // 3. AppPreferences round-trip for new settings
+        let prevSkip = AppPreferences.skipControlMode
+        let prevScale = AppPreferences.readerFontScale
+        let prevBookID = AppPreferences.lastOpenedBookID
+        defer {
+            AppPreferences.skipControlMode = prevSkip
+            AppPreferences.readerFontScale = prevScale
+            AppPreferences.lastOpenedBookID = prevBookID
+        }
+
+        AppPreferences.skipControlMode = .seconds15
+        #expect(AppPreferences.skipControlMode == .seconds15)
+        AppPreferences.readerFontScale = .extraLarge
+        #expect(AppPreferences.readerFontScale == .extraLarge)
+        let testID = UUID()
+        AppPreferences.lastOpenedBookID = testID
+        #expect(AppPreferences.lastOpenedBookID == testID)
     }
 
     @Test("Cover image sanitization downscales oversized images and AudioCacheManager blocks path traversal in voiceID")

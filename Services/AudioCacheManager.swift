@@ -1,21 +1,40 @@
+import AVFoundation
 import CryptoKit
 import Foundation
 
-/// Manages persistent on-disk caching of AI TTS `.mp3` clips at:
-/// `Application Support/AudioCache/{bookID}/{voiceID}/chapter_{index}/{sentenceHash}.mp3`
-/// Uses a deterministic CryptoKit SHA-256 hash of `voiceID + sentenceText` and marks the directory
-/// with `isExcludedFromBackup = true`.
+/// Manages persistent on-disk caching of synthesized TTS audio clips at:
+/// `Application Support/AudioCache/{bookID}/{voiceID}/chapter_{index}/{sentenceHash}.{ext}`
+///
+/// Features:
+/// - Deterministic CryptoKit SHA-256 hashing of `voiceID + sentenceText`
+/// - Backup-excluded storage (`isExcludedFromBackup = true`)
+/// - Optional AAC/M4A (64 kbps) compression (~6× smaller than uncompressed WAV)
+/// - Automatic LRU disk-cache eviction enforcing `maxCacheBytes` (default 400 MB)
 final class AudioCacheManager: Sendable {
     static let shared = AudioCacheManager()
 
-    init() {
+    /// Default upper bound for cached synthesized clips on disk (400 MB).
+    static let defaultMaxCacheBytes: Int64 = 400 * 1024 * 1024
+
+    private let customRootURL: URL?
+    let maxCacheBytes: Int64
+
+    init(
+        rootDirectoryURL: URL? = nil,
+        maxCacheBytes: Int64 = AudioCacheManager.defaultMaxCacheBytes
+    ) {
+        self.customRootURL = rootDirectoryURL
+        self.maxCacheBytes = max(1, maxCacheBytes)
         ensureRootCacheDirectoryConfigured()
     }
 
     // MARK: - Directory & Hashing
 
-    /// Root cache folder: `Application Support/AudioCache`
+    /// Root cache folder: `Application Support/AudioCache` (or custom test directory).
     var rootCacheDirectoryURL: URL {
+        if let customRootURL {
+            return customRootURL
+        }
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL.temporaryDirectory
         return appSupport.appendingPathComponent("AudioCache", isDirectory: true)
@@ -50,12 +69,13 @@ final class AudioCacheManager: Sendable {
         fileExtension: String = "mp3"
     ) -> URL {
         let safeVoice = sanitizedDirectoryComponent(voiceID)
+        let safeExt = sanitizedDirectoryComponent(fileExtension)
         let hash = sentenceHash(voiceID: voiceID, sentenceText: sentenceText)
         return rootCacheDirectoryURL
             .appendingPathComponent(bookID.uuidString, isDirectory: true)
             .appendingPathComponent(safeVoice, isDirectory: true)
-            .appendingPathComponent("chapter_\(chapterIndex)", isDirectory: true)
-            .appendingPathComponent("\(hash).\(fileExtension)", isDirectory: false)
+            .appendingPathComponent("chapter_\(max(0, chapterIndex))", isDirectory: true)
+            .appendingPathComponent("\(hash).\(safeExt)", isDirectory: false)
     }
 
     /// Returns the cached audio file URL if it already exists on disk and is non-empty, or `nil` if uncached.
@@ -79,7 +99,33 @@ final class AudioCacheManager: Sendable {
               size > 0 else {
             return nil
         }
+        touchModificationDate(at: url)
         return url
+    }
+
+    /// Looks up a cached neural audio clip in preferred format order (`.m4a` compressed first, then legacy `.wav`).
+    func cachedNeuralAudioURL(
+        bookID: UUID,
+        voiceID: String,
+        chapterIndex: Int,
+        sentenceText: String
+    ) -> URL? {
+        if let m4a = cachedFileURL(
+            bookID: bookID,
+            voiceID: voiceID,
+            chapterIndex: chapterIndex,
+            sentenceText: sentenceText,
+            fileExtension: "m4a"
+        ) {
+            return m4a
+        }
+        return cachedFileURL(
+            bookID: bookID,
+            voiceID: voiceID,
+            chapterIndex: chapterIndex,
+            sentenceText: sentenceText,
+            fileExtension: "wav"
+        )
     }
 
     /// Returns `true` if a sentence clip is cached on disk for the specified book, voice, and chapter.
@@ -99,9 +145,25 @@ final class AudioCacheManager: Sendable {
         ) != nil
     }
 
-    // MARK: - Saving Audio Clips
+    /// Returns `true` if a neural clip (`.m4a` or `.wav`) is cached on disk.
+    func isNeuralSentenceCached(
+        bookID: UUID,
+        voiceID: String,
+        chapterIndex: Int,
+        sentenceText: String
+    ) -> Bool {
+        cachedNeuralAudioURL(
+            bookID: bookID,
+            voiceID: voiceID,
+            chapterIndex: chapterIndex,
+            sentenceText: sentenceText
+        ) != nil
+    }
 
-    /// Atomically writes synthesized audio data to the deterministic cache path and excludes the cache folder from iCloud backup.
+    // MARK: - Saving Audio Clips & AAC Compression
+
+    /// Atomically writes synthesized audio data to the deterministic cache path, excludes the cache folder
+    /// from iCloud backups, and runs automatic LRU eviction if the cache exceeds `maxCacheBytes`.
     @discardableResult
     func saveAudioData(
         _ data: Data,
@@ -122,12 +184,183 @@ final class AudioCacheManager: Sendable {
         let chapterDir = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: chapterDir, withIntermediateDirectories: true)
         try data.write(to: fileURL, options: .atomic)
+        evictOldestIfNeeded(protecting: fileURL)
         return fileURL
+    }
+
+    /// Compresses a 24 kHz 16-bit mono PCM WAV buffer into AAC `.m4a` (~6× smaller on disk) and saves it
+    /// to the cache, falling back transparently to `.wav` if hardware/software AAC encoding is unavailable.
+    @discardableResult
+    func saveCompressedNeuralAudio(
+        wavData: Data,
+        bookID: UUID,
+        voiceID: String,
+        chapterIndex: Int,
+        sentenceText: String
+    ) throws -> URL {
+        ensureRootCacheDirectoryConfigured()
+        let m4aURL = targetFileURL(
+            bookID: bookID,
+            voiceID: voiceID,
+            chapterIndex: chapterIndex,
+            sentenceText: sentenceText,
+            fileExtension: "m4a"
+        )
+        let chapterDir = m4aURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: chapterDir, withIntermediateDirectories: true)
+
+        if Self.transcodeWAVDataToM4A(wavData: wavData, destinationURL: m4aURL) {
+            evictOldestIfNeeded(protecting: m4aURL)
+            return m4aURL
+        }
+
+        // Graceful fallback to WAV if AAC encoding fails in any environment
+        return try saveAudioData(
+            wavData,
+            bookID: bookID,
+            voiceID: voiceID,
+            chapterIndex: chapterIndex,
+            sentenceText: sentenceText,
+            fileExtension: "wav"
+        )
+    }
+
+    /// Off-main-actor wrapper around `saveCompressedNeuralAudio` so AAC transcoding and LRU directory
+    /// scanning never block UI rendering or scrolling.
+    @discardableResult
+    func saveCompressedNeuralAudioAsync(
+        wavData: Data,
+        bookID: UUID,
+        voiceID: String,
+        chapterIndex: Int,
+        sentenceText: String
+    ) async throws -> URL {
+        try await Task.detached(priority: .utility) {
+            try self.saveCompressedNeuralAudio(
+                wavData: wavData,
+                bookID: bookID,
+                voiceID: voiceID,
+                chapterIndex: chapterIndex,
+                sentenceText: sentenceText
+            )
+        }.value
+    }
+
+    /// Transcodes PCM WAV data into a 64 kbps mono AAC `.m4a` file using `AVAudioFile`.
+    static func transcodeWAVDataToM4A(wavData: Data, destinationURL: URL) -> Bool {
+        guard wavData.count > 44 else { return false }
+        let fm = FileManager.default
+        let tempWAV = fm.temporaryDirectory.appendingPathComponent("kokoro_enc_\(UUID().uuidString).wav")
+        let tempM4A = fm.temporaryDirectory.appendingPathComponent("kokoro_enc_\(UUID().uuidString).m4a")
+        defer {
+            try? fm.removeItem(at: tempWAV)
+            try? fm.removeItem(at: tempM4A)
+        }
+
+        do {
+            try wavData.write(to: tempWAV, options: .atomic)
+            let inputFile = try AVAudioFile(forReading: tempWAV)
+            let processingFormat = inputFile.processingFormat
+            let frameCount = AVAudioFrameCount(inputFile.length)
+            guard frameCount > 0,
+                  let buffer = AVAudioPCMBuffer(pcmFormat: processingFormat, frameCapacity: frameCount) else {
+                return false
+            }
+            try inputFile.read(into: buffer)
+
+            let aacSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: processingFormat.sampleRate,
+                AVNumberOfChannelsKey: processingFormat.channelCount,
+                AVEncoderBitRateKey: 64_000
+            ]
+            do {
+                let outputFile = try AVAudioFile(
+                    forWriting: tempM4A,
+                    settings: aacSettings,
+                    commonFormat: processingFormat.commonFormat,
+                    interleaved: processingFormat.isInterleaved
+                )
+                try outputFile.write(from: buffer)
+            }
+
+            guard fm.fileExists(atPath: tempM4A.path),
+                  let attrs = try? fm.attributesOfItem(atPath: tempM4A.path),
+                  let size = attrs[.size] as? UInt64,
+                  size > 0 else {
+                return false
+            }
+
+            if fm.fileExists(atPath: destinationURL.path) {
+                try? fm.removeItem(at: destinationURL)
+            }
+            try fm.moveItem(at: tempM4A, to: destinationURL)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    // MARK: - LRU Eviction
+
+    /// Evicts the least-recently-used cached audio files whenever total cache bytes exceed `maxCacheBytes`.
+    func evictOldestIfNeeded(protecting protectedURL: URL? = nil) {
+        let fm = FileManager.default
+        let root = rootCacheDirectoryURL
+        guard fm.fileExists(atPath: root.path),
+              let enumerator = fm.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+              ) else {
+            return
+        }
+
+        struct CachedEntry {
+            let url: URL
+            let size: Int64
+            let modifiedDate: Date
+        }
+
+        var entries: [CachedEntry] = []
+        var totalBytes: Int64 = 0
+        let protectedPath = protectedURL?.standardizedFileURL.path
+
+        for case let fileURL as URL in enumerator {
+            guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]),
+                  values.isRegularFile == true,
+                  let size = values.fileSize else {
+                continue
+            }
+            let byteSize = Int64(size)
+            totalBytes += byteSize
+            entries.append(
+                CachedEntry(
+                    url: fileURL,
+                    size: byteSize,
+                    modifiedDate: values.contentModificationDate ?? .distantPast
+                )
+            )
+        }
+
+        guard totalBytes > maxCacheBytes else { return }
+
+        // Evict oldest-used files until we're comfortably below 85% of the cap
+        let targetBytes = Int64(Double(maxCacheBytes) * 0.85)
+        let sortedOldestFirst = entries.sorted { $0.modifiedDate < $1.modifiedDate }
+
+        for entry in sortedOldestFirst {
+            if totalBytes <= targetBytes { break }
+            if entry.url.standardizedFileURL.path == protectedPath { continue }
+            if (try? fm.removeItem(at: entry.url)) != nil {
+                totalBytes -= entry.size
+            }
+        }
     }
 
     // MARK: - Chapter & Book Cache Inspection
 
-    /// Number of sentences in a chapter that already have cached `.mp3` files on disk.
+    /// Number of segments in a chapter that already have cached audio files on disk.
     func cachedSentenceCount(
         bookID: UUID,
         voiceID: String,
@@ -136,7 +369,12 @@ final class AudioCacheManager: Sendable {
     ) -> Int {
         guard !sentences.isEmpty else { return 0 }
         return sentences.reduce(into: 0) { count, sentence in
-            if isSentenceCached(
+            if isNeuralSentenceCached(
+                bookID: bookID,
+                voiceID: voiceID,
+                chapterIndex: chapterIndex,
+                sentenceText: sentence
+            ) || isSentenceCached(
                 bookID: bookID,
                 voiceID: voiceID,
                 chapterIndex: chapterIndex,
@@ -147,7 +385,7 @@ final class AudioCacheManager: Sendable {
         }
     }
 
-    /// Returns `true` when every sentence in the chapter is cached locally for the selected voice.
+    /// Returns `true` when every segment in the chapter is cached locally for the selected voice.
     func isChapterFullyCached(
         bookID: UUID,
         voiceID: String,
@@ -165,12 +403,12 @@ final class AudioCacheManager: Sendable {
 
     // MARK: - Storage & Cache Cleanup
 
-    /// Total size in bytes of all cached AI `.mp3` files across all books.
+    /// Total size in bytes of all cached audio files across all books.
     func totalCachedBytes() -> Int64 {
         directorySizeInBytes(at: rootCacheDirectoryURL)
     }
 
-    /// Total size in bytes of cached AI `.mp3` files for a specific book.
+    /// Total size in bytes of cached audio files for a specific book.
     func cachedBytes(for bookID: UUID) -> Int64 {
         let bookDir = rootCacheDirectoryURL.appendingPathComponent(bookID.uuidString, isDirectory: true)
         return directorySizeInBytes(at: bookDir)
@@ -188,7 +426,7 @@ final class AudioCacheManager: Sendable {
         return formatter.string(fromByteCount: bytes)
     }
 
-    /// Clears all cached AI audio for a specific book.
+    /// Clears all cached audio for a specific book.
     func clearCache(for bookID: UUID) {
         let bookDir = rootCacheDirectoryURL.appendingPathComponent(bookID.uuidString, isDirectory: true)
         if FileManager.default.fileExists(atPath: bookDir.path) {
@@ -196,7 +434,7 @@ final class AudioCacheManager: Sendable {
         }
     }
 
-    /// Clears the entire AI audio cache across all books and re-initializes the backup-excluded directory.
+    /// Clears the entire audio cache across all books and re-initializes the backup-excluded directory.
     func clearAllCachedAudio() {
         let root = rootCacheDirectoryURL
         if FileManager.default.fileExists(atPath: root.path) {
@@ -206,6 +444,10 @@ final class AudioCacheManager: Sendable {
     }
 
     // MARK: - Private Helpers
+
+    private func touchModificationDate(at url: URL) {
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+    }
 
     private func ensureRootCacheDirectoryConfigured() {
         var root = rootCacheDirectoryURL

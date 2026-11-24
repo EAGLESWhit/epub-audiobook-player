@@ -38,6 +38,62 @@ enum ReadingSegmentationMode: String, CaseIterable, Identifiable, Codable, Senda
     }
 }
 
+/// Controls whether skip forward/backward buttons jump by paragraph/sentence or seek ±15 seconds.
+enum SkipControlMode: String, CaseIterable, Identifiable, Codable, Sendable {
+    case segment
+    case seconds15
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .segment: return "Paragraph / Sentence"
+        case .seconds15: return "15 Seconds"
+        }
+    }
+}
+
+/// Reader text size presets selectable via the `Aa` control in `PlayerView`.
+enum ReaderFontScale: String, CaseIterable, Identifiable, Codable, Sendable {
+    case small
+    case medium
+    case large
+    case extraLarge
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .small: return "Small"
+        case .medium: return "Medium"
+        case .large: return "Large"
+        case .extraLarge: return "Extra Large"
+        }
+    }
+
+    var bodyFontSize: CGFloat {
+        switch self {
+        case .small: return 15
+        case .medium: return 17
+        case .large: return 20
+        case .extraLarge: return 23
+        }
+    }
+
+    var activeFontSize: CGFloat {
+        bodyFontSize + 2
+    }
+
+    var lineSpacing: CGFloat {
+        switch self {
+        case .small: return 4
+        case .medium: return 5
+        case .large: return 7
+        case .extraLarge: return 8
+        }
+    }
+}
+
 /// Represents a parsed chapter from an EPUB spine item with clean readable text, paragraphs, and sentences.
 struct EPUBChapter: Identifiable, Hashable, Codable, Sendable {
     var id: Int { index }
@@ -362,16 +418,6 @@ struct VoiceOption: Identifiable, Hashable, Codable, Sendable {
         "evan", "nathan", "daniel", "martha", "arthur", "karen", "moira", "tessa"
     ]
 
-    /// Default Mac-bridged Siri Natural voice available in the iOS Simulator via `MacVoiceBridgeServer`.
-    static let macSiriNoraVoice = VoiceOption(
-        id: "com.apple.siri.natural.Nora",
-        name: "Siri Nora (Voice 4)",
-        languageCode: "en-US",
-        qualityTier: .enhanced,
-        subtitle: "Mac Siri Natural • English (United States)",
-        gender: .female
-    )
-
     private static let knownFemaleVoiceNames: Set<String> = [
         "samantha", "ava", "zoe", "allison", "nicky", "nora", "martha", "karen",
         "moira", "tessa", "fiona", "victoria", "kate", "serena", "stephanie",
@@ -405,60 +451,24 @@ struct VoiceOption: Identifiable, Hashable, Codable, Sendable {
         }
     }
 
-    /// Cached voices discovered from the local Mac Voice Bridge (`http://127.0.0.1:8765/voices`) when running in the Simulator.
-    @MainActor
-    private static var cachedMacBridgeVoices: [VoiceOption] = [macSiriNoraVoice]
+    /// Thread-safe in-memory cache of enumerated on-device Apple voices to avoid repeated XPC queries
+    /// to `AVSpeechSynthesisVoice.speechVoices()` on the main thread during SwiftUI list rendering.
+    private static let voiceCacheLock = NSLock()
+    private nonisolated(unsafe) static var cachedOnDeviceVoices: [VoiceOption]?
 
-    /// Asynchronously refreshes the list of macOS Siri, Premium, and Enhanced voices from `http://127.0.0.1:8765/voices`.
-    @MainActor
-    static func refreshMacBridgeVoices() async {
-        #if targetEnvironment(simulator)
-        guard let url = URL(string: "http://127.0.0.1:8765/voices") else { return }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 2.0
-
-        struct BridgedDTO: Decodable {
-            let id: String
-            let name: String
-            let languageCode: String
-            let qualityTier: String
-            let subtitle: String
+    /// Invalidates the cached Apple voice list (call after tapping Refresh or returning from iOS Settings).
+    static func invalidateOnDeviceVoiceCache() {
+        voiceCacheLock.withLock {
+            cachedOnDeviceVoices = nil
         }
-
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                return
-            }
-            let decoded = try JSONDecoder().decode([BridgedDTO].self, from: data)
-            let mapped = decoded.map { dto -> VoiceOption in
-                let tier: VoiceQualityTier
-                switch dto.qualityTier {
-                case "Premium": tier = .premium
-                case "Enhanced": tier = .enhanced
-                default: tier = .standard
-                }
-                return VoiceOption(
-                    id: dto.id,
-                    name: dto.name,
-                    languageCode: dto.languageCode,
-                    qualityTier: tier,
-                    subtitle: dto.subtitle,
-                    gender: Self.inferredGender(forVoiceName: dto.name)
-                )
-            }
-            if !mapped.isEmpty {
-                cachedMacBridgeVoices = mapped
-            }
-        } catch {
-            // Simulator Mac bridge is optional; fall back to local AVSpeechSynthesisVoice list.
-        }
-        #endif
     }
 
     /// Queries all locally installed natural `AVSpeechSynthesisVoice` options on the device (prioritizing Siri & Enhanced/Premium voices),
-    /// and merges Mac-bridged Siri/Enhanced/Premium voices when running in the iOS Simulator.
-    static func availableOnDeviceVoices() -> [VoiceOption] {
+    /// using an in-memory cache for snappy SwiftUI rendering unless `forceRefresh` is requested.
+    static func availableOnDeviceVoices(forceRefresh: Bool = false) -> [VoiceOption] {
+        if !forceRefresh, let cached = voiceCacheLock.withLock({ cachedOnDeviceVoices }) {
+            return cached
+        }
         var allVoices = AVSpeechSynthesisVoice.speechVoices()
 
         // Probe Siri Natural voices directly in case VoiceDBClient fallback omitted them from speechVoices()
@@ -542,24 +552,7 @@ struct VoiceOption: Identifiable, Hashable, Codable, Sendable {
             )
         }
 
-        var combined = mapped
-        #if targetEnvironment(simulator)
-        let bridgeVoices: [VoiceOption]
-        if Thread.isMainThread {
-            bridgeVoices = MainActor.assumeIsolated { cachedMacBridgeVoices }
-        } else {
-            bridgeVoices = [macSiriNoraVoice]
-        }
-        for bVoice in bridgeVoices {
-            if let existingIdx = combined.firstIndex(where: { $0.id == bVoice.id }) {
-                combined[existingIdx] = bVoice
-            } else {
-                combined.append(bVoice)
-            }
-        }
-        #endif
-
-        return combined.sorted { lhs, rhs in
+        let sorted = mapped.sorted { lhs, rhs in
             let lhsEnglish = lhs.languageCode.lowercased().hasPrefix("en")
             let rhsEnglish = rhs.languageCode.lowercased().hasPrefix("en")
             if lhsEnglish != rhsEnglish {
@@ -590,6 +583,10 @@ struct VoiceOption: Identifiable, Hashable, Codable, Sendable {
             }
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
+        voiceCacheLock.withLock {
+            cachedOnDeviceVoices = sorted
+        }
+        return sorted
     }
 
     /// Resolves a `VoiceOption` by identifier (supporting both Kokoro-82M neural voices and Apple voices),
