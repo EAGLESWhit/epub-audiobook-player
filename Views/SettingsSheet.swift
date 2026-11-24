@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Settings sheet allowing users to choose their default narrator voice, download or remove the on-device
-/// Kokoro-82M neural voice engine, configure paragraph/sentence parsing, toggle iCloud Sync,
-/// and view instructions for downloading Apple Enhanced and Premium voices.
+/// Settings sheet allowing users to choose their default narrator voice, download or remove on-device
+/// neural engine voices, view Apple voice download steps, configure paragraph/sentence parsing,
+/// and toggle iCloud Sync.
 struct SettingsSheet: View {
     @Bindable var player: AudiobookPlayer
 
@@ -32,7 +32,7 @@ struct SettingsSheet: View {
                 Section {
                     Picker("Default Narrator Voice", selection: $preferredOfflineVoiceID) {
                         ForEach(availableDefaultVoices) { voice in
-                            Text("\(voice.name) (\(voice.qualityTier.rawValue))")
+                            Text(voice.pickerDisplayLabel)
                                 .tag(voice.id)
                         }
                     }
@@ -45,7 +45,7 @@ struct SettingsSheet: View {
                     Text("Premium and Enhanced voices provide the highest-fidelity narration. Used automatically when starting or resuming any book unless you pick a different voice inside that specific book.")
                 }
 
-                // 2. Kokoro-82M On-Device Neural AI Voices
+                // 2. On-Device Neural Engine Voices
                 Section {
                     switch kokoroManager.state {
                     case .notDownloaded:
@@ -63,12 +63,9 @@ struct SettingsSheet: View {
                                 _ = try? await kokoroManager.downloadAndPrepareIfNeeded()
                             }
                         } label: {
-                            Label(
-                                "Download Kokoro-82M Neural Voices (\(KokoroModelManager.estimatedDownloadSizeText))",
-                                systemImage: "sparkles"
-                            )
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.purple)
+                            Label("Download Neural Voices (~145MB)", systemImage: "sparkles")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.purple)
                         }
 
                     case .downloading(let progress, let status):
@@ -88,7 +85,7 @@ struct SettingsSheet: View {
 
                     case .ready:
                         HStack {
-                            Label("Kokoro-82M Ready", systemImage: "checkmark.circle.fill")
+                            Label("Neural Voices Ready", systemImage: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
                             Spacer()
                             Text(kokoroManager.installedDiskSizeText)
@@ -112,21 +109,34 @@ struct SettingsSheet: View {
                                     _ = try? await kokoroManager.downloadAndPrepareIfNeeded()
                                 }
                             } label: {
-                                Label(
-                                    "Retry Download (\(KokoroModelManager.estimatedDownloadSizeText))",
-                                    systemImage: "arrow.clockwise.circle.fill"
-                                )
-                                .foregroundStyle(.purple)
+                                Label("Download Neural Voices (~145MB)", systemImage: "arrow.clockwise.circle.fill")
+                                    .foregroundStyle(.purple)
                             }
                         }
                     }
                 } header: {
-                    Text("Kokoro-82M Neural Voices (On-Device)")
+                    Text("On-Device Neural Engine Voices")
                 } footer: {
                     Text("Requires \(KokoroModelManager.estimatedDownloadSizeText) of device storage (plus \(KokoroModelManager.estimatedPerVoiceSizeText) per extra voice style). Runs 100% offline on Apple's Neural Engine with zero subscription or cloud fees.")
                 }
 
-                // 3. Reading & Text Parsing Granularity
+                // 3. Step-by-Step Guide to Download Apple's Enhanced & Premium Voices
+                Section {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("On iPhone & iPad", systemImage: "iphone")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(Color.accentColor)
+
+                        Text("1. Open the **iOS Settings** app.\n2. Tap **Accessibility → Read & Speak → Voices → English** *(called **Spoken Content** on older iOS)*.\n3. Tap a voice (e.g., **Ava**, **Zoe**, **Evan**, **Allison**, or **Samantha**) and tap the **cloud download icon** next to **Premium** or **Enhanced**.\n4. Return to **EPUB Player** and select the voice in the player's Voice Picker.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                } header: {
+                    Text("How to Download Apple's Enhanced & Premium Voices")
+                }
+
+                // 4. Reading & Text Parsing Granularity
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Parse Text By")
@@ -150,7 +160,7 @@ struct SettingsSheet: View {
                     Text("Paragraph (default) narrates full paragraphs smoothly with fewer pauses and fewer awkward splits. Choose Sentence to navigate and highlight one sentence at a time.")
                 }
 
-                // 4. iCloud Sync Toggle
+                // 5. iCloud Sync Toggle
                 Section {
                     Toggle("Enable iCloud Sync", isOn: $isICloudSyncEnabled)
                         .onChange(of: isICloudSyncEnabled) { _, newValue in
@@ -169,27 +179,7 @@ struct SettingsSheet: View {
                 } header: {
                     Text("iCloud Sync")
                 } footer: {
-                    if SyncManager.isCloudKitEntitlementAvailable {
-                        Text("Syncs your imported books (.epub files and cover artwork), current chapter and reading position, and bookmarks with notes across your devices via your private iCloud database.")
-                    } else {
-                        Text("When signed with an Apple Developer CloudKit profile, syncs your imported books (.epub files and cover art), current chapter and reading position, and bookmarks across your devices. Currently using local on-device storage.")
-                    }
-                }
-
-                // 5. Step-by-Step Guide to Download Enhanced & Premium Voices
-                Section {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label("On iPhone & iPad", systemImage: "iphone")
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(Color.accentColor)
-
-                        Text("1. Open the **iOS Settings** app.\n2. Tap **Accessibility → Read & Speak → Voices → English** *(called **Spoken Content** on older iOS)*.\n3. Tap a voice (e.g., **Ava**, **Zoe**, **Evan**, **Allison**, or **Samantha**) and tap the **cloud download icon** next to **Premium** or **Enhanced**.\n4. Return to **EPUB Player** and select the voice in the player's Voice Picker.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 4)
-                } header: {
-                    Text("How to Download Enhanced & Premium Voices")
+                    Text("Syncs your imported .epub files, cover artwork, current chapter and reading position, playback speed, narrator voice selection, and bookmarks with notes to iCloud so your other devices can pick up right where you left off.")
                 }
             }
             .navigationTitle("Settings")
@@ -203,7 +193,7 @@ struct SettingsSheet: View {
                 }
             }
             .confirmationDialog(
-                "Remove Kokoro-82M Neural Model?",
+                "Remove On-Device Neural Model?",
                 isPresented: $showingDeleteKokoroConfirmation,
                 titleVisibility: .visible
             ) {
@@ -215,7 +205,7 @@ struct SettingsSheet: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("You can re-download Kokoro-82M anytime. If a Kokoro voice is currently active, playback will switch back to an Apple voice.")
+                Text("You can re-download the neural voices anytime. If a neural voice is currently active, playback will switch back to an Apple voice.")
             }
             .task {
                 kokoroManager.refreshInstalledStatus()

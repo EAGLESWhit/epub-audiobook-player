@@ -260,11 +260,27 @@ struct EPUBPlaybackAppTests {
         #expect(heart.name == "Heart")
         #expect(heart.kokoroVoiceName == "af_heart")
         #expect(heart.qualityTier == .neural)
+        #expect(heart.gender == .female)
+        #expect(heart.pickerDisplayLabel == "Heart (Female • Neural AI)")
 
         let george = VoiceOption.resolve(id: "kokoro:bm_george")
         #expect(george.isKokoro)
         #expect(george.kokoroVoiceName == "bm_george")
         #expect(george.languageCode == "en-GB")
+        #expect(george.gender == .male)
+        #expect(george.pickerDisplayLabel == "George (Male • Neural AI)")
+
+        // Verify safe synthesis chunking handles punctuation-only dividers and long paragraphs
+        #expect(KokoroModelManager.safeSynthesisChunks(from: "* * *").isEmpty)
+        let longParagraph = String(repeating: "Elena watched the horizon glow above the dark ocean cliffs. ", count: 12)
+        let chunks = KokoroModelManager.safeSynthesisChunks(from: longParagraph)
+        #expect(chunks.count >= 2)
+        #expect(chunks.allSatisfy { $0.count <= 280 })
+
+        // Verify PCM16 WAV header generation and speech duration estimation
+        let wav = KokoroModelManager.makePCM16WAV(from: [0.0, 0.25, -0.25, 0.5], sampleRate: 24_000)
+        #expect(wav.count == 44 + 8)
+        #expect(AudiobookPlayer.estimatedSpeechDuration(for: longParagraph) > 30.0)
 
         // Verify deterministic WAV caching works for Kokoro voice IDs containing ':'
         let cache = AudioCacheManager.shared

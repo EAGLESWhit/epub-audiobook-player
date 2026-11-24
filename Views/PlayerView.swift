@@ -250,7 +250,7 @@ struct PlayerView: View {
 
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 10) {
-                highlightedSegmentText(text: text, isCurrent: isCurrent)
+                Text(text)
                     .font(isCurrent ? .title3.weight(.semibold) : .body)
                     .foregroundStyle(isCurrent ? Color.primary : Color.primary.opacity(0.76))
                     .lineSpacing(5)
@@ -334,22 +334,6 @@ struct PlayerView: View {
                 }
             }
         }
-    }
-
-    private func highlightedSegmentText(text: String, isCurrent: Bool) -> Text {
-        guard isCurrent,
-              let spokenRange = player.activeSpokenRange,
-              spokenRange.length > 0,
-              let stringRange = Range(spokenRange, in: text) else {
-            return Text(text)
-        }
-
-        var attributed = AttributedString(text)
-        if let attributedRange = Range(stringRange, in: attributed) {
-            attributed[attributedRange].backgroundColor = Color.accentColor.opacity(0.24)
-            attributed[attributedRange].foregroundColor = .primary
-        }
-        return Text(attributed)
     }
 
     // MARK: - Bottom Translucent Liquid Glass Transport & Action Pills
