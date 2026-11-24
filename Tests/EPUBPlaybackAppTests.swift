@@ -2,6 +2,8 @@ import CryptoKit
 import Foundation
 import SwiftData
 import Testing
+import UIKit
+import ZIPFoundation
 @testable import EPUBPlaybackApp
 
 @MainActor
@@ -314,5 +316,233 @@ struct EPUBPlaybackAppTests {
         #expect(manager.state == .notDownloaded)
         let dirValues = try tempDir.resourceValues(forKeys: [.isExcludedFromBackupKey])
         #expect(dirValues.isExcludedFromBackup == true)
+    }
+
+    // MARK: - Security Hardening Tests (ZIP, Path Traversal, XXE, DRM, Cover Sanitization, Cache Isolation)
+
+    @Test("EPUBParser rejects invalid magic bytes, oversized archives, ZIP bombs, symlinks, and ZIP path traversal")
+    func testEPUBArchiveSecurityGuards() throws {
+        // 1. Non-ZIP file disguised as .epub
+        let fakeData = Data("NOT A REAL EPUB FILE".utf8)
+        let invalidBookID = UUID()
+        defer { EPUBParser.shared.removeExtractedFiles(for: invalidBookID) }
+        #expect(throws: EPUBParserError.invalidFileFormat) {
+            _ = try EPUBParser.shared.extractAndParseEPUB(from: fakeData, bookID: invalidBookID)
+        }
+
+        // 2. ZIP entry with path traversal (../escape.txt)
+        let traversalArchiveData = try makeInMemoryZIP { archive in
+            try addZIPFile(to: archive, path: "../escape.txt", data: Data("escaped".utf8))
+        }
+        let traversalBookID = UUID()
+        defer { EPUBParser.shared.removeExtractedFiles(for: traversalBookID) }
+        do {
+            _ = try EPUBParser.shared.extractAndParseEPUB(from: traversalArchiveData, bookID: traversalBookID)
+            Issue.record("Expected path traversal archive to be rejected")
+        } catch let error as EPUBParserError {
+            guard case .unsafeArchive = error else {
+                Issue.record("Expected .unsafeArchive, got \(error)")
+                return
+            }
+        }
+        #expect(!FileManager.default.fileExists(atPath: EPUBParser.extractionDirectory(for: traversalBookID).path))
+
+        // 3. ZIP containing a symbolic link entry
+        let symlinkArchiveData = try makeInMemoryZIP { archive in
+            let targetData = Data("/etc/passwd".utf8)
+            try archive.addEntry(with: "OEBPS/link.xhtml", type: .symlink, uncompressedSize: Int64(targetData.count), compressionMethod: .none) { pos, size in
+                let start = Int(pos)
+                let end = min(targetData.count, start + size)
+                return targetData.subdata(in: start..<end)
+            }
+        }
+        let symlinkBookID = UUID()
+        defer { EPUBParser.shared.removeExtractedFiles(for: symlinkBookID) }
+        do {
+            _ = try EPUBParser.shared.extractAndParseEPUB(from: symlinkArchiveData, bookID: symlinkBookID)
+            Issue.record("Expected symlink archive to be rejected")
+        } catch let error as EPUBParserError {
+            guard case .unsafeArchive = error else {
+                Issue.record("Expected .unsafeArchive, got \(error)")
+                return
+            }
+        }
+
+        // 4. ZIP bomb / uncompressed size limit enforcement
+        let repetitivePayload = Data(repeating: 0x41, count: 64 * 1024) // 64 KB of 'A' compresses tiny
+        let bombData = try makeInMemoryZIP { archive in
+            try addZIPFile(to: archive, path: "OEBPS/huge.xhtml", data: repetitivePayload, method: .deflate)
+        }
+        var tightLimits = EPUBParser.SecurityLimits.default
+        tightLimits.maxTotalUncompressedBytes = 8 * 1024 // 8 KB cap for test
+        let strictParser = EPUBParser(limits: tightLimits)
+        let bombBookID = UUID()
+        defer { strictParser.removeExtractedFiles(for: bombBookID) }
+        do {
+            _ = try strictParser.extractAndParseEPUB(from: bombData, bookID: bombBookID)
+            Issue.record("Expected oversized uncompressed archive to be rejected")
+        } catch let error as EPUBParserError {
+            guard case .unsafeArchive = error else {
+                Issue.record("Expected .unsafeArchive, got \(error)")
+                return
+            }
+        }
+    }
+
+    @Test("EPUBParser blocks OPF and chapter path traversal, strips XML ENTITY definitions, and detects DRM while allowing font obfuscation")
+    func testEPUBXMLPathConfinementAndDRMDetection() throws {
+        // 1. container.xml pointing outside extraction directory
+        let badContainerZIP = try makeInMemoryZIP { archive in
+            let container = """
+            <?xml version="1.0"?>
+            <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+              <rootfiles>
+                <rootfile full-path="../../outside.opf" media-type="application/oebps-package+xml"/>
+              </rootfiles>
+            </container>
+            """
+            try addZIPFile(to: archive, path: "META-INF/container.xml", data: Data(container.utf8))
+        }
+        let badOPFBookID = UUID()
+        defer { EPUBParser.shared.removeExtractedFiles(for: badOPFBookID) }
+        do {
+            _ = try EPUBParser.shared.extractAndParseEPUB(from: badContainerZIP, bookID: badOPFBookID)
+            Issue.record("Expected OPF traversal to be rejected")
+        } catch let error as EPUBParserError {
+            guard case .unsafeArchive = error else {
+                Issue.record("Expected .unsafeArchive, got \(error)")
+                return
+            }
+        }
+
+        // 2. DRM-protected EPUB via META-INF/encryption.xml encrypting chapter XHTML
+        let drmZIP = try makeInMemoryZIP { archive in
+            let encryption = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+              <enc:EncryptedData>
+                <enc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes128-cbc"/>
+                <enc:CipherData><enc:CipherReference URI="OEBPS/chapter1.xhtml"/></enc:CipherData>
+              </enc:EncryptedData>
+            </encryption>
+            """
+            try addZIPFile(to: archive, path: "META-INF/encryption.xml", data: Data(encryption.utf8))
+            try addZIPFile(to: archive, path: "META-INF/container.xml", data: Data("<container/>".utf8))
+        }
+        let drmBookID = UUID()
+        defer { EPUBParser.shared.removeExtractedFiles(for: drmBookID) }
+        #expect(throws: EPUBParserError.drmProtected) {
+            _ = try EPUBParser.shared.extractAndParseEPUB(from: drmZIP, bookID: drmBookID)
+        }
+
+        // 3. Standard IDPF font obfuscation in encryption.xml is allowed (not DRM)
+        let fontObfuscationZIP = try makeInMemoryZIP { archive in
+            let encryption = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:enc="http://www.w3.org/2001/04/xmlenc#">
+              <enc:EncryptedData>
+                <enc:EncryptionMethod Algorithm="http://www.idpf.org/2008/embedding"/>
+                <enc:CipherData><enc:CipherReference URI="OEBPS/fonts/BookSerif.otf"/></enc:CipherData>
+              </enc:EncryptedData>
+            </encryption>
+            """
+            let container = """
+            <?xml version="1.0"?>
+            <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+              <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+            </container>
+            """
+            let opf = """
+            <?xml version="1.0"?>
+            <package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+              <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+                <dc:title>Font Obfuscated Book</dc:title>
+                <dc:creator>Test Author</dc:creator>
+              </metadata>
+              <manifest>
+                <item id="c1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+              </manifest>
+              <spine><itemref idref="c1"/></spine>
+            </package>
+            """
+            let chapter = """
+            <?xml version="1.0"?>
+            <!DOCTYPE html [
+              <!ENTITY lol "lol">
+              <!ENTITY lol2 "&lol;&lol;&lol;&lol;">
+            ]>
+            <html xmlns="http://www.w3.org/1999/xhtml">
+              <body><h1>Chapter One</h1><p>This chapter remains readable even with font obfuscation.</p></body>
+            </html>
+            """
+            try addZIPFile(to: archive, path: "META-INF/encryption.xml", data: Data(encryption.utf8))
+            try addZIPFile(to: archive, path: "META-INF/container.xml", data: Data(container.utf8))
+            try addZIPFile(to: archive, path: "OEBPS/content.opf", data: Data(opf.utf8))
+            try addZIPFile(to: archive, path: "OEBPS/chapter1.xhtml", data: Data(chapter.utf8))
+        }
+        let fontBookID = UUID()
+        defer { EPUBParser.shared.removeExtractedFiles(for: fontBookID) }
+        let parsed = try EPUBParser.shared.extractAndParseEPUB(from: fontObfuscationZIP, bookID: fontBookID)
+        #expect(parsed.title == "Font Obfuscated Book")
+        #expect(parsed.chapters.count == 1)
+
+        // 4. ExtractedEPUBs root is excluded from iCloud backups
+        let extractedRootValues = try EPUBParser.extractedRootDirectory().resourceValues(forKeys: [.isExcludedFromBackupKey])
+        #expect(extractedRootValues.isExcludedFromBackup == true)
+    }
+
+    @Test("Cover image sanitization downscales oversized images and AudioCacheManager blocks path traversal in voiceID")
+    func testCoverImageDownscalingAndCachePathSanitization() throws {
+        // Generate an oversized 2000x2000 test image
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 2000, height: 2000))
+        let bigImage = renderer.image { ctx in
+            UIColor.systemIndigo.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 2000, height: 2000))
+        }
+        let rawPNG = try #require(bigImage.pngData())
+        let sanitized = try #require(EPUBParser.shared.sanitizeCoverImageData(rawPNG))
+        let decoded = try #require(UIImage(data: sanitized))
+        #expect(decoded.size.width <= 1200)
+        #expect(decoded.size.height <= 1200)
+
+        // Ensure malicious voiceID cannot traverse out of AudioCache root
+        let cache = AudioCacheManager.shared
+        let url = cache.targetFileURL(
+            bookID: UUID(),
+            voiceID: "../../etc/passwd",
+            chapterIndex: 0,
+            sentenceText: "Hello",
+            fileExtension: "wav"
+        )
+        let rootPath = cache.rootCacheDirectoryURL.standardizedFileURL.path
+        #expect(url.standardizedFileURL.path.hasPrefix(rootPath + "/"))
+    }
+
+    // MARK: - ZIP Test Helpers
+
+    private func makeInMemoryZIP(_ build: (Archive) throws -> Void) throws -> Data {
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("TestArchive-\(UUID().uuidString).epub")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        let archive = try Archive(url: tempURL, accessMode: .create)
+        try build(archive)
+        return try Data(contentsOf: tempURL)
+    }
+
+    private func addZIPFile(
+        to archive: Archive,
+        path: String,
+        data: Data,
+        method: CompressionMethod = .none
+    ) throws {
+        try archive.addEntry(
+            with: path,
+            type: .file,
+            uncompressedSize: Int64(data.count),
+            compressionMethod: method
+        ) { position, size in
+            let start = Int(position)
+            let end = min(data.count, start + size)
+            return data.subdata(in: start..<end)
+        }
     }
 }
