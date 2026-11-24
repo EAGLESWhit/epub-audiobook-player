@@ -44,22 +44,35 @@ final class AudiobookPlayer {
 
     var modelContext: ModelContext?
     private let offlineProvider: OfflineTTSProvider
+    private let kokoroProvider: KokoroTTSProvider
+    let kokoroModelManager: KokoroModelManager
     private let syncManager: SyncManager
 
     private var activeProvider: any TTSProvider
     private var currentVolume: Float = 1.0
     private var sleepTimerTask: Task<Void, Never>?
     private var fadeOutTask: Task<Void, Never>?
-    private var interruptionObserver: NSObjectProtocol?
-    private var routeChangeObserver: NSObjectProtocol?
+    private var audioSessionObservers: [NSObjectProtocol] = []
     private var remoteCommandsConfigured: Bool = false
+
+    // Interruption auto-resume & Lock Screen timekeeping state
+    private var shouldResumeAfterInterruption: Bool = false
+    private var chapterSegmentDurations: [TimeInterval] = []
+    private var segmentPlaybackStartedAt: Date? = nil
+    private var segmentElapsedBeforePause: TimeInterval = 0
 
     init(
         offlineProvider: OfflineTTSProvider? = nil,
+        kokoroProvider: KokoroTTSProvider? = nil,
+        kokoroModelManager: KokoroModelManager? = nil,
         syncManager: SyncManager? = nil
     ) {
         let offline = offlineProvider ?? OfflineTTSProvider()
+        let modelManager = kokoroModelManager ?? .shared
+        let kokoro = kokoroProvider ?? KokoroTTSProvider(modelManager: modelManager)
         self.offlineProvider = offline
+        self.kokoroProvider = kokoro
+        self.kokoroModelManager = modelManager
         self.syncManager = syncManager ?? .shared
         self.activeProvider = offline
 
@@ -174,11 +187,14 @@ final class AudiobookPlayer {
                 self.isUsingBookVoiceOverride = false
                 book.selectedVoiceID = nil
             }
-            activePlaybackMode = .offlineVoice
+            updateActivePlaybackModeIndicator()
 
             book.totalChapters = max(1, parsed.chapters.count)
             book.totalSentencesInCurrentChapter = max(1, chapterSentences.count)
             try? modelContext?.save()
+
+            rebuildChapterDurationEstimates()
+            resetCurrentSegmentTimer()
 
             isLoadingBook = false
             if presentFullPlayer {
@@ -196,10 +212,13 @@ final class AudiobookPlayer {
     }
 
     func closeBook() {
+        shouldResumeAfterInterruption = false
         stopPlaybackInternal()
         cancelSleepTimer()
         currentBook = nil
         chapters = []
+        chapterSegmentDurations = []
+        resetCurrentSegmentTimer()
         currentChapterIndex = 0
         currentSentenceIndex = 0
         isPresentingFullPlayer = false
@@ -218,24 +237,61 @@ final class AudiobookPlayer {
 
     func play() {
         guard currentBook != nil, !chapters.isEmpty else { return }
+        shouldResumeAfterInterruption = false
         configureAudioSession()
 
-        // If the active provider was paused mid-sentence, resume cleanly
+        // If the active provider was paused mid-segment, resume cleanly
         if activeProvider.isPaused {
             activeProvider.resume()
-            isPlaying = true
-            updateNowPlayingInfo()
-            return
+            if activeProvider.isSpeaking {
+                isPlaying = true
+                segmentPlaybackStartedAt = Date()
+                updateNowPlayingInfo()
+                return
+            }
         }
 
         speakCurrentSentence()
     }
 
     func pause() {
+        shouldResumeAfterInterruption = false
+        pauseInternal()
+    }
+
+    private func pauseInternal() {
+        freezeCurrentSegmentTimer()
         activeProvider.pause()
         isPlaying = false
         saveProgress()
         updateNowPlayingInfo()
+    }
+
+    /// Invoked when iOS deactivates our audio session (e.g., notification sound, Siri, phone call).
+    func handleAudioSessionDidBecomeInactive() {
+        if isPlaying {
+            shouldResumeAfterInterruption = true
+            pauseInternal()
+        } else {
+            saveProgress()
+        }
+    }
+
+    /// Invoked when iOS signals that an audio interruption has finished and playback may resume.
+    func handleAudioSessionResumptionRecommended() {
+        guard shouldResumeAfterInterruption, !isPlaying, currentBook != nil else { return }
+        shouldResumeAfterInterruption = false
+        play()
+    }
+
+    /// Invoked when headphones/AirPods are disconnected — pause and do not auto-resume.
+    func handleAudioRouteDisconnected() {
+        shouldResumeAfterInterruption = false
+        if isPlaying {
+            pauseInternal()
+        } else {
+            saveProgress()
+        }
     }
 
     func skipForwardSentence() {
@@ -247,12 +303,14 @@ final class AudiobookPlayer {
         } else if currentChapterIndex + 1 < chapters.count {
             currentChapterIndex += 1
             currentSentenceIndex = 0
+            rebuildChapterDurationEstimates()
         } else {
             // Reached end of final chapter
             pause()
             return
         }
 
+        resetCurrentSegmentTimer()
         saveProgress()
         if isPlaying {
             speakCurrentSentence()
@@ -271,10 +329,12 @@ final class AudiobookPlayer {
             currentChapterIndex -= 1
             let prevSentences = chapters[currentChapterIndex].segments(for: segmentationMode)
             currentSentenceIndex = max(0, prevSentences.count - 1)
+            rebuildChapterDurationEstimates()
         } else {
             currentSentenceIndex = 0
         }
 
+        resetCurrentSegmentTimer()
         saveProgress()
         if isPlaying {
             speakCurrentSentence()
@@ -289,6 +349,8 @@ final class AudiobookPlayer {
         let targetSentences = chapters[index].segments(for: segmentationMode)
         currentChapterIndex = index
         currentSentenceIndex = min(max(0, sentenceIndex), max(0, targetSentences.count - 1))
+        rebuildChapterDurationEstimates()
+        resetCurrentSegmentTimer()
 
         saveProgress()
         if isPlaying || autoPlay {
@@ -302,6 +364,7 @@ final class AudiobookPlayer {
     func selectSentence(at sentenceIndex: Int, autoPlay: Bool = true) {
         guard currentSentences.indices.contains(sentenceIndex) else { return }
         currentSentenceIndex = sentenceIndex
+        resetCurrentSegmentTimer()
         saveProgress()
 
         if isPlaying || autoPlay {
@@ -312,10 +375,36 @@ final class AudiobookPlayer {
         }
     }
 
+    /// Handles Lock Screen scrubber seeking by mapping a chapter timecode (seconds) to its segment.
+    func seekWithinChapter(to elapsedSeconds: TimeInterval) {
+        guard !currentSentences.isEmpty else { return }
+        if chapterSegmentDurations.count != currentSentences.count {
+            rebuildChapterDurationEstimates()
+        }
+
+        let target = max(0, elapsedSeconds)
+        var accumulated: TimeInterval = 0
+        var chosenIndex = currentSentences.count - 1
+
+        for (idx, duration) in chapterSegmentDurations.enumerated() {
+            if target < accumulated + duration {
+                chosenIndex = idx
+                break
+            }
+            accumulated += duration
+        }
+
+        selectSentence(at: chosenIndex, autoPlay: isPlaying)
+    }
+
     func setPlaybackRate(_ newRate: Double) {
         let clamped = Self.clampRate(newRate)
+        freezeCurrentSegmentTimer()
         playbackRate = clamped
         activeProvider.updatePlaybackRate(clamped)
+        if isPlaying {
+            segmentPlaybackStartedAt = Date()
+        }
         saveProgress()
 
         // If on-device AVSpeechSynthesizer is currently speaking, restart the current utterance at the new rate
@@ -406,6 +495,8 @@ final class AudiobookPlayer {
         }
 
         currentBook?.totalSentencesInCurrentChapter = max(1, newSegments.count)
+        rebuildChapterDurationEstimates()
+        resetCurrentSegmentTimer()
         saveProgress()
 
         if isPlaying {
@@ -466,8 +557,9 @@ final class AudiobookPlayer {
             }
         }
 
-        offlineProvider.stop()
         activeSpokenRange = nil
+        errorMessage = nil
+        resetCurrentSegmentTimer()
 
         let request = TTSSpeechRequest(
             sentence: sentenceText,
@@ -481,9 +573,18 @@ final class AudiobookPlayer {
         )
 
         isPlaying = true
-        activeProvider = offlineProvider
-        activePlaybackMode = .offlineVoice
-        offlineProvider.speak(request)
+        if selectedVoice.isKokoro {
+            offlineProvider.stop()
+            activeProvider = kokoroProvider
+            activePlaybackMode = .kokoroNeural
+            kokoroProvider.speak(request)
+        } else {
+            kokoroProvider.stop()
+            activeProvider = offlineProvider
+            activePlaybackMode = .offlineVoice
+            segmentPlaybackStartedAt = Date()
+            offlineProvider.speak(request)
+        }
         updateNowPlayingInfo()
     }
 
@@ -494,6 +595,76 @@ final class AudiobookPlayer {
         offlineProvider.onSpokenRangeChanged = { [weak self] range in
             self?.activeSpokenRange = range
         }
+
+        kokoroProvider.onSentenceFinished = { [weak self] in
+            self?.handleSentenceFinished()
+        }
+        kokoroProvider.onSpokenRangeChanged = { [weak self] range in
+            self?.activeSpokenRange = range
+        }
+        kokoroProvider.onSynthesisStateChanged = { [weak self] isSynthesizing in
+            guard let self, self.selectedVoice.isKokoro else { return }
+            self.activePlaybackMode = isSynthesizing ? .kokoroPreparing : .kokoroNeural
+            self.updateNowPlayingInfo()
+        }
+        kokoroProvider.onAudioPlaybackStarted = { [weak self] exactDuration in
+            guard let self else { return }
+            if self.chapterSegmentDurations.indices.contains(self.currentSentenceIndex), exactDuration > 0 {
+                self.chapterSegmentDurations[self.currentSentenceIndex] = exactDuration
+            }
+            self.segmentElapsedBeforePause = 0
+            self.segmentPlaybackStartedAt = Date()
+            self.updateNowPlayingInfo()
+        }
+        kokoroProvider.onError = { [weak self] message in
+            guard let self else { return }
+            // If the neural model is installed and a single unusual paragraph still failed after self-healing,
+            // seamlessly read that single paragraph with an Apple voice so playback never stalls mid-book.
+            if self.kokoroModelManager.isModelInstalledOnDisk,
+               let book = self.currentBook,
+               self.currentSentences.indices.contains(self.currentSentenceIndex) {
+                let fallbackVoice = VoiceOption.defaultOfflineVoice()
+                let fallbackRequest = TTSSpeechRequest(
+                    sentence: self.currentSentences[self.currentSentenceIndex],
+                    bookID: book.id,
+                    chapterIndex: self.currentChapterIndex,
+                    sentenceIndex: self.currentSentenceIndex,
+                    voice: fallbackVoice,
+                    rate: self.playbackRate,
+                    volume: self.currentVolume,
+                    upcomingSentences: []
+                )
+                self.activeProvider = self.offlineProvider
+                self.activePlaybackMode = .offlineVoice
+                self.segmentElapsedBeforePause = 0
+                self.segmentPlaybackStartedAt = Date()
+                self.offlineProvider.speak(fallbackRequest)
+                self.updateNowPlayingInfo()
+                return
+            }
+
+            self.isPlaying = false
+            self.activePlaybackMode = self.selectedVoice.isKokoro ? .kokoroNeural : .offlineVoice
+            self.errorMessage = "Neural Voice error: \(message)"
+            self.updateNowPlayingInfo()
+        }
+    }
+
+    /// Removes downloaded Kokoro-82M CoreML models from disk and falls back to an Apple voice if Kokoro was active.
+    func removeKokoroModels() async {
+        if selectedVoice.isKokoro {
+            stopPlaybackInternal()
+            let fallback = VoiceOption.defaultOfflineVoice()
+            selectedVoice = fallback
+            isUsingBookVoiceOverride = false
+            currentBook?.selectedVoiceID = nil
+            updateActivePlaybackModeIndicator()
+            saveProgress()
+        }
+        if KeychainHelper.preferredOfflineVoiceID.hasPrefix(VoiceOption.kokoroIDPrefix) {
+            KeychainHelper.preferredOfflineVoiceID = VoiceOption.defaultOfflineVoice().id
+        }
+        await kokoroModelManager.deleteDownloadedModels()
     }
 
     private func handleSentenceFinished() {
@@ -520,11 +691,14 @@ final class AudiobookPlayer {
             if currentChapterIndex + 1 < chapters.count {
                 currentChapterIndex += 1
                 currentSentenceIndex = 0
+                rebuildChapterDurationEstimates()
+                resetCurrentSegmentTimer()
                 saveProgress()
                 speakCurrentSentence()
             } else {
                 // Completed the entire book
                 isPlaying = false
+                resetCurrentSegmentTimer()
                 saveProgress()
                 updateNowPlayingInfo()
             }
@@ -532,11 +706,16 @@ final class AudiobookPlayer {
     }
 
     private func updateActivePlaybackModeIndicator() {
-        activePlaybackMode = .offlineVoice
+        if selectedVoice.isKokoro {
+            activePlaybackMode = kokoroProvider.isSynthesizing ? .kokoroPreparing : .kokoroNeural
+        } else {
+            activePlaybackMode = .offlineVoice
+        }
     }
 
     private func stopPlaybackInternal() {
         offlineProvider.stop()
+        kokoroProvider.stop()
         activeSpokenRange = nil
         isPlaying = false
     }
@@ -745,6 +924,7 @@ final class AudiobookPlayer {
         // Restore full volume for the next time the user presses Play
         currentVolume = 1.0
         offlineProvider.setVolume(1.0)
+        kokoroProvider.setVolume(1.0)
 
         sleepTimerOption = .off
         sleepTimerRemainingSeconds = 0
@@ -760,6 +940,7 @@ final class AudiobookPlayer {
         sleepTimerRemainingSeconds = 0
         currentVolume = 1.0
         offlineProvider.setVolume(1.0)
+        kokoroProvider.setVolume(1.0)
     }
 
     // MARK: - Background Audio Session, Lock Screen Controls & Interruptions
@@ -790,14 +971,41 @@ final class AudiobookPlayer {
             return
         }
 
+        if chapterSegmentDurations.count != currentSentences.count {
+            rebuildChapterDurationEstimates()
+        }
+
+        let totalDuration = max(1.0, chapterSegmentDurations.reduce(0.0, +))
+        let safeIndex = min(max(0, currentSentenceIndex), chapterSegmentDurations.count)
+        let elapsedBeforeCurrent = chapterSegmentDurations.prefix(safeIndex).reduce(0.0, +)
+        let currentSegmentDuration = chapterSegmentDurations.indices.contains(currentSentenceIndex)
+            ? chapterSegmentDurations[currentSentenceIndex]
+            : 0.0
+
+        let elapsedWithinCurrent: TimeInterval
+        if selectedVoice.isKokoro && activeProvider === kokoroProvider {
+            elapsedWithinCurrent = kokoroProvider.currentPlaybackTime
+        } else {
+            let liveDelta: TimeInterval
+            if isPlaying, let startedAt = segmentPlaybackStartedAt {
+                liveDelta = Date().timeIntervalSince(startedAt) * playbackRate
+            } else {
+                liveDelta = 0
+            }
+            elapsedWithinCurrent = min(max(0, segmentElapsedBeforePause + liveDelta), currentSegmentDuration)
+        }
+
+        let effectiveElapsed = min(max(0, elapsedBeforeCurrent + elapsedWithinCurrent), totalDuration)
+        let effectiveRate = (isPlaying && activePlaybackMode != .kokoroPreparing) ? playbackRate : 0.0
+
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: currentChapter?.title ?? book.title,
             MPMediaItemPropertyAlbumTitle: book.title,
             MPMediaItemPropertyArtist: book.author,
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? playbackRate : 0.0,
+            MPNowPlayingInfoPropertyPlaybackRate: effectiveRate,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(currentSentenceIndex),
-            MPMediaItemPropertyPlaybackDuration: Double(max(1, currentSentences.count))
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: effectiveElapsed,
+            MPMediaItemPropertyPlaybackDuration: totalDuration
         ]
 
         if let coverData = book.coverArtworkData,
@@ -808,10 +1016,74 @@ final class AudiobookPlayer {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
+    private func rebuildChapterDurationEstimates() {
+        let segments = currentSentences
+        guard !segments.isEmpty else {
+            chapterSegmentDurations = []
+            return
+        }
+
+        let bookID = currentBook?.id
+        let voiceID = selectedVoice.id
+        let isKokoro = selectedVoice.isKokoro
+        let chapterIdx = currentChapterIndex
+
+        chapterSegmentDurations = segments.map { text in
+            if isKokoro,
+               let bookID,
+               let wavURL = AudioCacheManager.shared.cachedFileURL(
+                    bookID: bookID,
+                    voiceID: voiceID,
+                    chapterIndex: chapterIdx,
+                    sentenceText: text,
+                    fileExtension: "wav"
+               ),
+               let exact = Self.wavDurationSeconds(at: wavURL) {
+                return exact
+            }
+            return Self.estimatedSpeechDuration(for: text)
+        }
+    }
+
+    private func resetCurrentSegmentTimer() {
+        segmentElapsedBeforePause = 0
+        segmentPlaybackStartedAt = nil
+    }
+
+    private func freezeCurrentSegmentTimer() {
+        if let startedAt = segmentPlaybackStartedAt {
+            segmentElapsedBeforePause += Date().timeIntervalSince(startedAt) * playbackRate
+            segmentPlaybackStartedAt = nil
+        }
+    }
+
+    /// Estimates base 1.0x spoken duration in seconds at ~155 WPM (~2.58 words/sec).
+    static func estimatedSpeechDuration(for text: String) -> TimeInterval {
+        let words = text.split(whereSeparator: { $0.isWhitespace }).count
+        guard words > 0 else { return 1.0 }
+        return max(1.5, Double(words) / 2.58)
+    }
+
+    /// Reads the exact duration in seconds from a 24 kHz 16-bit mono PCM WAV header without decoding the file.
+    private static func wavDurationSeconds(at url: URL) -> TimeInterval? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let header = try? handle.read(upToCount: 44), header.count >= 44 else { return nil }
+        let sampleRate = header.withUnsafeBytes { raw -> UInt32 in
+            raw.loadUnaligned(fromByteOffset: 24, as: UInt32.self).littleEndian
+        }
+        let byteRate = header.withUnsafeBytes { raw -> UInt32 in
+            raw.loadUnaligned(fromByteOffset: 28, as: UInt32.self).littleEndian
+        }
+        let dataBytes = header.withUnsafeBytes { raw -> UInt32 in
+            raw.loadUnaligned(fromByteOffset: 40, as: UInt32.self).littleEndian
+        }
+        guard sampleRate > 0, byteRate > 0, dataBytes > 0 else { return nil }
+        return Double(dataBytes) / Double(byteRate)
+    }
+
     private func registerAudioInterruptionObservers() {
-        let tokens = NowPlayingInterop.registerAudioSessionObservers(for: self)
-        interruptionObserver = tokens.interruption
-        routeChangeObserver = tokens.routeChange
+        audioSessionObservers = NowPlayingInterop.registerAudioSessionObservers(for: self)
     }
 
     private static func clampRate(_ rate: Double) -> Double {
@@ -898,31 +1170,89 @@ private enum NowPlayingInterop {
             }
             return .success
         }
+
+        commandCenter.changePlaybackPositionCommand.isEnabled = true
+        commandCenter.changePlaybackPositionCommand.addTarget { [weak player] event in
+            guard let player, let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
+                return .commandFailed
+            }
+            let position = positionEvent.positionTime
+            Task { @MainActor in
+                player.seekWithinChapter(to: position)
+            }
+            return .success
+        }
     }
 
     static func registerAudioSessionObservers(
         for player: AudiobookPlayer
-    ) -> (interruption: NSObjectProtocol, routeChange: NSObjectProtocol) {
+    ) -> [NSObjectProtocol] {
         let center = NotificationCenter.default
+        let session = AVAudioSession.sharedInstance()
 
-        let interruption = center.addObserver(
+        // 1. Interruption / audio session deactivation (notifications, Siri, phone calls)
+        let didBecomeInactive = center.addObserver(
             forName: AVAudioSession.didBecomeInactiveNotification,
-            object: AVAudioSession.sharedInstance(),
+            object: session,
             queue: .main
         ) { [weak player] _ in
             Task { @MainActor in
-                guard let player else { return }
-                if player.isPlaying {
-                    player.pause()
-                } else {
-                    player.saveProgress()
+                player?.handleAudioSessionDidBecomeInactive()
+            }
+        }
+
+        // 2. iOS 27 resumption recommendation when interruption finishes (e.g., notification/Siri/call ends)
+        let resumptionRecommended = center.addObserver(
+            forName: AVAudioSession.resumptionRecommendationNotification,
+            object: session,
+            queue: .main
+        ) { [weak player] notification in
+            let context = notification.userInfo?[AVAudioSession.resumptionContextKey] as? AVAudioSession.ResumptionContext
+            let shouldResume = (context?.recommendation == .shouldResume)
+            guard shouldResume else { return }
+            Task { @MainActor in
+                player?.handleAudioSessionResumptionRecommended()
+            }
+        }
+
+        // 3. Session became active again after a brief interruption
+        let didBecomeActive = center.addObserver(
+            forName: AVAudioSession.didBecomeActiveNotification,
+            object: session,
+            queue: .main
+        ) { [weak player] _ in
+            Task { @MainActor in
+                player?.handleAudioSessionResumptionRecommended()
+            }
+        }
+
+        // 4. Secondary audio silence hints (e.g., spoken navigation or notification ducking/pausing)
+        let silenceSecondary = center.addObserver(
+            forName: AVAudioSession.silenceSecondaryAudioHintNotification,
+            object: session,
+            queue: .main
+        ) { [weak player] notification in
+            guard let userInfo = notification.userInfo,
+                  let typeRaw = userInfo[AVAudioSessionSilenceSecondaryAudioHintTypeKey] as? UInt,
+                  let hintType = AVAudioSession.SilenceSecondaryAudioHintType(rawValue: typeRaw) else {
+                return
+            }
+            Task { @MainActor in
+                switch hintType {
+                case .begin:
+                    player?.handleAudioSessionDidBecomeInactive()
+                case .end:
+                    player?.handleAudioSessionResumptionRecommended()
+                @unknown default:
+                    break
                 }
             }
         }
 
+        // 5. Headphones / AirPods unplugged — pause cleanly without auto-resuming
         let routeChange = center.addObserver(
             forName: AVAudioSession.routeChangeNotification,
-            object: AVAudioSession.sharedInstance(),
+            object: session,
             queue: .main
         ) { [weak player] notification in
             guard let userInfo = notification.userInfo,
@@ -933,16 +1263,11 @@ private enum NowPlayingInterop {
 
             if reason == .oldDeviceUnavailable {
                 Task { @MainActor in
-                    guard let player else { return }
-                    if player.isPlaying {
-                        player.pause()
-                    } else {
-                        player.saveProgress()
-                    }
+                    player?.handleAudioRouteDisconnected()
                 }
             }
         }
 
-        return (interruption, routeChange)
+        return [didBecomeInactive, resumptionRecommended, didBecomeActive, silenceSecondary, routeChange]
     }
 }
